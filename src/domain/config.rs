@@ -91,12 +91,12 @@ impl SentryConfig {
         let src = source
             .or(sentry_sec.source)
             .unwrap_or_else(|| "http://192.168.1.36:4747/video".to_string());
-        let conf = confidence.or(sentry_sec.confidence).unwrap_or(0.35);
+        let conf = confidence.or(sentry_sec.confidence).unwrap_or(0.25);
         let cd = cooldown.or(sentry_sec.cooldown).unwrap_or(5);
         let mg = motion_gate.or(sentry_sec.motion_gate).unwrap_or(true);
         let mt = motion_threshold
             .or(sentry_sec.motion_threshold)
-            .unwrap_or(0.015);
+            .unwrap_or(0.005);
 
         Self {
             source: src,

@@ -188,6 +188,7 @@ monban --test
 ```
 
 ## 6. Recent Iteration Changes
+- **2026-09-26**: Upgraded YOLO input resolution to native 640×640 with aspect-ratio preserving letterboxing (2.37× pixel density increase) and tuned confidence to 0.25 for distant intruder detection across rooms; upgraded motion grid to 128×96 with 0.005 sensitivity threshold.
 - **2026-09-26**: Added ultra-low-overhead pixel difference `MotionDetector` gating (idle CPU drops from ~150% to <2%) with 3s intruder grace period.
 - **2026-09-26**: Added two-way Telegram bot command control (`/status`, `/snap`, `/arm`, `/disarm`, `/help`) with strict `chat_id` authentication.
 - **2026-09-26**: Added `monban --setup` interactive terminal setup wizard for dedicated Telegram bot configuration stored in `~/.config/monban/config.toml`.

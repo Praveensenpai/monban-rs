@@ -26,3 +26,20 @@ fn test_motion_detector_static_and_dynamic() {
     // Frame 4: Identical frame again (motion stops, returns false)
     assert!(!detector.check_motion(&img3));
 }
+
+#[test]
+fn test_motion_detector_subtle_distant_motion() {
+    let mut detector = MotionDetector::new(0.005);
+    let img1 = DynamicImage::ImageRgb8(RgbImage::new(128, 96));
+    assert!(detector.check_motion(&img1)); // Baseline
+
+    // Alter ~1% of pixels (120 pixels out of 12288)
+    let mut img2_raw = RgbImage::new(128, 96);
+    for x in 0..12 {
+        for y in 0..10 {
+            img2_raw.put_pixel(x, y, Rgb([200, 200, 200]));
+        }
+    }
+    let img2 = DynamicImage::ImageRgb8(img2_raw);
+    assert!(detector.check_motion(&img2));
+}

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[command(
     name = "monban",
     author = "paisen",
-    version = "0.2.0",
+    version = "0.2.1",
     about = "🥋 門番 (Monban) — Zero-Bloat Rust AI Room & Door Sentry"
 )]
 pub struct CliArgs {
@@ -27,7 +27,7 @@ pub struct CliArgs {
     #[arg(
         short,
         long,
-        default_value_t = 0.35,
+        default_value_t = 0.25,
         help = "Detection confidence threshold (0.0 - 1.0)"
     )]
     pub confidence: f32,
@@ -53,8 +53,8 @@ pub struct CliArgs {
 
     #[arg(
         long,
-        default_value_t = 0.015,
-        help = "Pixel difference threshold ratio for motion detection gating (0.001 - 1.0)"
+        default_value_t = 0.005,
+        help = "Pixel difference threshold ratio for motion detection gating (0.0005 - 1.0)"
     )]
     pub motion_threshold: f32,
 

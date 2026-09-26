@@ -13,10 +13,10 @@ impl MotionDetector {
     pub fn new(threshold: f32) -> Self {
         Self {
             previous_frame: None,
-            threshold: threshold.clamp(0.001, 1.0),
-            pixel_delta_min: 25,
-            target_width: 64,
-            target_height: 48,
+            threshold: threshold.clamp(0.0005, 1.0),
+            pixel_delta_min: 20,
+            target_width: 128,
+            target_height: 96,
         }
     }
 
