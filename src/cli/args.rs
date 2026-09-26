@@ -77,6 +77,18 @@ pub struct CliArgs {
     )]
     pub no_motion_gate: bool,
 
+    #[arg(
+        long,
+        help = "Percentage of top frame to ignore for motion/detection (0-90)"
+    )]
+    pub ignore_top: Option<u32>,
+
+    #[arg(
+        long,
+        help = "Number of days to keep evidence snapshots before pruning (defaults to 7)"
+    )]
+    pub retention_days: Option<u32>,
+
     #[arg(short, long, help = "Enable verbose debug logging")]
     pub verbose: bool,
 }

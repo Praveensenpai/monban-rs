@@ -4,35 +4,49 @@
 
 ## 1. System Topology & Data Flow
 ```text
-[Camera Stream: HTTP MJPEG (DroidCam/IPCam)]
+[Camera Stream: HTTP MJPEG (DroidCam/IPCam)]   <── Auto-Reconnect (exp backoff 2→30s)
                   │
                   ▼
          MjpegStream (Background Worker)
                   │ 0xFF,0xD8 .. 0xFF,0xD9 extraction
                   ▼
+         FrameBuffer (VecDeque<DynamicImage>, cap=30)  <── Rolling ring-buffer for GIF
+                  │
+                  ▼
+         MotionDetector (128x96 grayscale, ignore_top_percent)
+                  │ check_motion() -> motion_mask: Vec<bool>
+                  ▼
          RoomSentry.process_frame()
                   │
                   ▼
-         YoloDetector.detect() (ONNX Runtime, 416x416)
+         YoloDetector.detect() (ONNX Runtime, 416x416 / 640x640)
                   │
                   ▼
-         NMS (Non-Maximum Suppression)
+         apply_motion_mask() -> has_motion_in_box() per bbox
                   │
-         ┌────────┴────────┐
-    [No Person]      [Person Found]
-         │                 │
-      Continue             ▼
-                     Cooldown Check
+                  ▼
+         temporal_confirm() -> 2-frame window (600ms)
+                  │
+          ┌───────┴───────┐
+     [No Confirm]  [Confirmed]
+          │               │
+       Continue            ▼
+                      Cooldown Check
                            │
-                 ┌─────────┴─────────┐
-             [Active]            [Expired]
-                 │                   │
-             Suppress                ▼
-                               annotate_frame()
-                               save evidence to disk
-                                     │
-                                     ▼
-                          TelegramClient.send_photo_alert()
+               ┌───────────┴───────────┐
+           [Active]               [Expired]
+               │                       │
+           Suppress              annotate_frame()
+                                save evidence to disk
+                                       │
+                                       ▼
+                          encode_animated_gif() (320x240 @ 10fps)
+                                       │
+                         ┌─────────────┴─────────────┐
+                    [GIF OK]                     [Fallback]
+                         │                           │
+                  sendAnimation              send_photo_alert()
+                  (Telegram Bot API)          (static JPEG)
 ```
 
 ## 2. Global Constraints & Architecture Patterns
@@ -58,7 +72,7 @@
   pub type Result<T> = std::result::Result<T, MonbanError>;
   ```
 
-### `src/domain/models.rs` (Role: domain, Lines: 153)
+### `src/domain/models.rs` (Role: domain, Lines: 154)
 - **Responsibility**: Pure domain models for bounding boxes, area calculation, Intersection-over-Union (IoU), 80 COCO classes, emoji mapping, and target guardian class filtering.
 - **Types & Enums**:
   ```rust
@@ -78,7 +92,7 @@
   pub fn is_default_target(label: &str) -> bool;
   ```
 
-### `src/domain/config.rs` (Role: domain, Lines: 186)
+### `src/domain/config.rs` (Role: domain, Lines: ~190)
 - **Responsibility**: Runtime configuration with priority: CLI > `~/.config/monban/config.toml` > `~/.config/tayori/config.toml`.
 - **Types & Enums**:
   ```rust
@@ -94,6 +108,8 @@
       pub motion_threshold: f32,
       pub targets: Vec<String>,
       pub rotate: u32,
+      pub ignore_top_percent: u32,   // NEW: ROI exclusion (0–90%)
+      pub retention_days: u32,       // NEW: evidence retention (default 7)
   }
   pub struct ConfigOverrides {
       pub source: Option<String>,
@@ -105,18 +121,36 @@
       pub motion_threshold: Option<f32>,
       pub targets: Option<Vec<String>>,
       pub rotate: Option<u32>,
+      pub ignore_top_percent: Option<u32>,  // NEW
+      pub retention_days: Option<u32>,      // NEW
   }
   ```
 
-### `src/infra/motion.rs` (Role: infra, Lines: 59)
-- **Responsibility**: Ultra-fast grayscale pixel-difference motion detector gating YOLO inference (128x96 grid, sub-0.1ms).
+### `src/infra/motion.rs` (Role: infra, Lines: 121)
+- **Responsibility**: Ultra-fast grayscale pixel-difference motion detector gating YOLO inference (128x96 grid, sub-0.1ms). Now includes per-pixel motion mask and ROI top-exclusion.
 - **Public Functions & Signatures**:
   ```rust
   impl MotionDetector {
       pub fn new(threshold: f32) -> Self;
+      pub fn with_ignore_top(self, percent: u32) -> Self;  // NEW
       pub fn check_motion(&mut self, image: &DynamicImage) -> bool;
+      pub fn has_motion_in_box(&self, bbox: &BoundingBox, orig_w: f32, orig_h: f32) -> bool;  // NEW
       pub fn reset(&mut self);
   }
+  ```
+
+### `src/infra/gif.rs` (Role: infra, Lines: 35)
+- **Responsibility**: Encodes a sequence of `DynamicImage` frames into an animated GIF at 320x240 for Telegram sendAnimation dispatch.
+- **Public Functions & Signatures**:
+  ```rust
+  pub fn encode_animated_gif(frames: &[DynamicImage], frame_delay_ms: u32) -> Result<Vec<u8>>;
+  ```
+
+### `src/infra/storage.rs` (Role: infra, Lines: 59)
+- **Responsibility**: Evidence retention housekeeping — scans save_dir and deletes `sentry_*.jpg` files older than `retention_days` days.
+- **Public Functions & Signatures**:
+  ```rust
+  pub fn prune_old_evidence(save_dir: &Path, retention_days: u32) -> usize;
   ```
 
 ### `src/infra/setup.rs` (Role: infra, Lines: 154)
@@ -126,7 +160,7 @@
   pub fn run_interactive_setup() -> Result<()>;
   ```
 
-### `src/infra/mjpeg.rs` (Role: infra, Lines: 131)
+### `src/infra/mjpeg.rs` (Role: infra, Lines: 134)
 - **Responsibility**: Background worker thread that streams multipart JPEG HTTP chunked responses with zero buffer queue lag.
 - **Types & Enums**:
   ```rust
@@ -156,24 +190,37 @@
   }
   ```
 
-### `src/api/telegram.rs` (Role: api, Lines: 341)
-- **Responsibility**: Two-way Telegram bot integration with interactive inline button keyboards (`[📸 Snapshot]`, `[🛡️ Mute 10m]`, `[⚔️ Arm]`, `[🛑 Disarm]`), toast callback queries, command polling, multipart photo alerts, and an internal rate-limited FIFO bounded queue (1 msg/sec pacing with automatic HTTP 429 backoff & retry).
+### `src/api/telegram.rs` (Role: api, Lines: 393)
+- **Responsibility**: Two-way Telegram bot integration with interactive inline button keyboards, toast callback queries, command polling, multipart photo/animation alerts, and rate-limited FIFO bounded queue (1 msg/sec pacing with HTTP 429 backoff & retry).
 - **Public Functions & Signatures**:
   ```rust
   pub enum BotCommand { Status, Arm, Disarm, Mute(u64), Snap, Help }
-  pub enum OutgoingMessage { Text(String), Photo { bytes: Vec<u8>, caption: String } }
+  pub enum OutgoingMessage {
+      Text(String),
+      Photo { bytes: Vec<u8>, caption: String },
+      Animation { bytes: Vec<u8>, caption: String },  // NEW
+  }
   impl TelegramClient {
       pub fn new(token: Option<String>, chat_id: Option<String>) -> Self;
       pub fn is_configured(&self) -> bool;
       pub fn send_message(&self, text: &str) -> Result<bool>;
       pub fn send_photo_alert(&self, image_bytes: Vec<u8>, caption: &str) -> Result<bool>;
+      pub fn send_animation_alert(&self, gif_bytes: Vec<u8>, caption: &str) -> Result<bool>;  // NEW
       pub fn answer_callback(&self, query_id: &str, toast: &str) -> Result<()>;
       pub fn poll_commands(&mut self) -> Result<Vec<BotCommand>>;
   }
   ```
 
-### `src/sentry.rs` (Role: sentry, Lines: 374)
-- **Responsibility**: Core guardian loop coordinating stream frames, motion gating, multi-object detection, cooldown filtering, PiP zoom evidence, temporary mute timers, and Telegram commands/buttons.
+### `src/sentry.rs` (Role: sentry, Lines: 397)
+- **Responsibility**: Core guardian loop coordinating stream reconnect (exponential backoff), motion-masked detection, 2-frame temporal confirmation, GIF/JPEG dispatch, periodic evidence pruning, and Telegram command/button handling.
+- **Constants**:
+  ```rust
+  const FRAME_BUFFER_CAP: usize = 30;        // rolling ring-buffer size
+  const GIF_FRAME_DELAY_MS: u32 = 100;       // 10fps animated GIF
+  const CONFIRM_WINDOW: Duration = 700ms;    // 2-frame confirmation window
+  const MAX_BACKOFF_SECS: u64 = 30;          // reconnect ceiling
+  const PRUNE_INTERVAL: Duration = 6h;       // housekeeping cadence
+  ```
 - **Public Functions & Signatures**:
   ```rust
   impl RoomSentry {
@@ -184,12 +231,27 @@
   }
   ```
 
+### `src/sentry/replies.rs` (Role: sentry, Lines: 165)
+- **Responsibility**: Bot reply helpers extracted from sentry.rs to keep it under 400 lines. Handles `/status`, `/help`, `/snap` output and mute_alerts state update.
+- **Public Functions & Signatures**:
+  ```rust
+  pub fn mute_alerts(telegram: &TelegramClient, mute_until: &mut Option<Instant>, mins: u64) -> Result<()>;
+  pub fn send_help(telegram: &TelegramClient) -> Result<()>;
+  pub fn send_status(telegram: &TelegramClient, config: &SentryConfig, armed: bool, mute_until: Option<Instant>, last_alert: Option<Instant>, start_time: Instant) -> Result<()>;
+  pub fn send_snapshot(telegram: &TelegramClient, detector: &mut YoloDetector, config: &SentryConfig, frame: &DynamicImage) -> Result<()>;
+  pub fn ist_now_str() -> String;  // shared IST timestamp formatter
+  ```
+
 ## 4. Execution Lifecycle Trace
 1. **Startup**: `src/main.rs` parses CLI args. If `--setup`, runs interactive terminal wizard and exits.
 2. **Dynamic Dylib**: Resolves `libonnxruntime.so` to absolute canonical path and calls `ort::init_from`.
 3. **Config Discovery**: Priority: CLI > `~/.config/monban/config.toml` > `~/.config/tayori/config.toml`.
-4. **Guard Loop**: Every cycle reads latest frame, checks motion detector (<0.1ms). If static, skips YOLO inference (idle CPU <2%). If motion or within 3s grace window, runs YOLO (42ms).
-5. **Two-Way Control**: Sentry polls authorized Telegram commands every 1.5s (`/status`, `/snap`, `/arm`, `/disarm`, `/help`).
+4. **Startup Housekeeping**: `prune_old_evidence` deletes stale `sentry_*.jpg` captures older than `retention_days` (default 7).
+5. **Guard Loop (Auto-Reconnect)**: Outer `'outer` loop retries `MjpegStream::connect` with exponential backoff (2→4→8→30s) on failure; Telegram offline/online alerts sent.
+6. **Per-Frame Pipeline**: Reads latest frame → pushes to 30-frame ring buffer → `check_motion` (skips YOLO if static) → `detect` → `apply_motion_mask` (bbox must overlap motion pixels) → `temporal_confirm` (2-frame window 600ms) → `handle_alert`.
+7. **Alert Dispatch**: If ≥4 frames in buffer: encodes animated GIF (320×240 @ 10fps) via `encode_animated_gif` + `sendAnimation`. Falls back to static JPEG `send_photo_alert` on encode failure.
+8. **Two-Way Control**: Sentry polls authorized Telegram commands every 1.5s (`/status`, `/snap`, `/arm`, `/disarm`, `/mute`, `/help`).
+9. **Periodic Housekeeping**: `prune_old_evidence` runs every 6 hours during the guard loop.
 
 ## 5. Verification Commands
 ```bash
@@ -208,18 +270,12 @@ monban --test
 ```
 
 ## 6. Recent Iteration Changes
-- **2026-09-26 (v0.3.6)**: Class-agnostic detection & clean alert captions: removed confusing COCO class names (`cat`, `chair`, `airplane`, `person`, etc.) from Telegram notifications and manual snapshot replies; detector now extracts peak confidence across candidate anchors and assigns clean, generic `"target"` labeling with confidence percentage.
+- **2026-09-26 (v0.4.0)**: **6 Guardian Upgrades** — Motion-masked bounding boxes (`has_motion_in_box`), 2-frame temporal confirmation (600ms window), animated GIF motion clips (30-frame ring buffer, 320×240 @ 10fps via `sendAnimation`), ROI top-exclusion (`--ignore-top`, configurable per-frame %), evidence disk retention (`--retention-days`, default 7, pruned on startup + every 6h), camera auto-reconnect with Telegram offline/online alerts (exponential backoff 2→30s).
+- **2026-09-26 (v0.3.6)**: Class-agnostic detection & clean alert captions: removed confusing COCO class names from Telegram notifications and manual snapshot replies; detector now extracts peak confidence across candidate anchors and assigns clean, generic `"target"` labeling with confidence percentage.
 - **2026-09-26 (v0.3.5)**: Rate-limited FIFO message queue & automatic HTTP 429 retry: implemented internal bounded worker channel (`sync_channel(10)`) and background pacing dispatcher enforcing Telegram's 1.0s inter-message limit; added exponential backoff on HTTP 429 / network errors reading `Retry-After`; eliminated ad-hoc thread spawning in sentry loop.
 - **2026-09-26 (v0.3.4)**: Real-time stream latency & non-blocking alert refactor: re-architected `MjpegStream` to zero-lag drop-stale raw JPEG storage (instantly discards older backlog frames, eliminating 2–4s queue lag when moving camera); made Telegram photo alert uploads non-blocking via detached background threads, keeping sentry video pipeline 100% fluid at real-time speeds.
-- **2026-09-26 (v0.3.3)**: Purged `cat` and irrelevant classes from default targets (`DEFAULT_TARGET_CLASSES`: strictly `person`, `dog`, `cow`), eliminating chair/furniture false alarms; added `--rotate <DEGREES>` (0, 90, 180, 270) stream rotation support for portrait/sideways camera orientations (eliminating 85% water bottle false human detections); calibrated default confidence to 0.45.
-- **2026-09-26 (v0.3.2)**: Target class whitelisting & confidence calibration: added guardian class whitelist (`DEFAULT_TARGET_CLASSES`: person, animals, vehicles), eliminating false alarms from non-guardian classes (e.g. household items misclassified as airplanes); raised calibrated default confidence to 0.40 to filter out weak false positives (e.g. water dispenser bottles as persons) while maintaining crisp detection for people and pets; introduced `ConfigOverrides` and `--targets` CLI argument.
-- **2026-09-26 (v0.3.1)**: Added adaptive model input resolution detection from ONNX tensor graph (`detect_input_size`), dynamically supporting both 416x416 legacy models and 640x640 high-density models; updated bundled and system `yolov8n.onnx` to native 640x640 resolution.
-- **2026-09-26 (v0.3.0)**: Added multi-object classification across all 80 COCO classes with contextual emojis (`COCO_CLASSES`, `class_emoji`). Added Picture-in-Picture (PiP) zoom thumbnail overlay on detected targets. Added interactive Telegram inline buttons (`[📸 Snapshot]`, `[🛡️ Mute 10m]`, `[⚔️ Arm]`, `[🛑 Disarm]`) with instant toast replies and timed mute alerts (`/mute`).
-- **2026-09-26**: Upgraded YOLO input resolution to native 640×640 with aspect-ratio preserving letterboxing (2.37× pixel density increase) and tuned confidence to 0.25 for distant intruder detection across rooms; upgraded motion grid to 128×96 with 0.005 sensitivity threshold.
-- **2026-09-26**: Added ultra-low-overhead pixel difference `MotionDetector` gating (idle CPU drops from ~150% to <2%) with 3s intruder grace period.
-- **2026-09-26**: Added two-way Telegram bot command control (`/status`, `/snap`, `/arm`, `/disarm`, `/help`) with strict `chat_id` authentication.
-- **2026-09-26**: Added `monban --setup` interactive terminal setup wizard for dedicated Telegram bot configuration stored in `~/.config/monban/config.toml`.
-- **2026-09-26**: Formatted all runtime logs in IST (Indian Standard Time, UTC+05:30) via custom `tracing_subscriber` `FormatTime` timer; replaced UTC timestamps across the entire application.
-- **2026-09-26**: Fixed ONNX Runtime dylib dynamic loader to canonicalize search paths and invoke `ort::init_from` explicitly; converted CLI `--model` to `Option<PathBuf>` enabling seamless global fallback to `~/.local/share/monban/yolov8n.onnx` from any working directory.
-- **2026-09-26**: Reduced default alert cooldown from 30s to 5s across CLI and domain config.
-- **2026-09-26**: Complete Rust port of Monban AI room sentry. 11MB standalone binary, 69MB RAM footprint (91.5% reduction), 42ms inference latency.
+- **2026-09-26 (v0.3.3)**: Purged `cat` and irrelevant classes from default targets, added `--rotate <DEGREES>` stream rotation support.
+- **2026-09-26 (v0.3.2)**: Target class whitelisting & confidence calibration.
+- **2026-09-26 (v0.3.1)**: Added adaptive model input resolution detection from ONNX tensor graph.
+- **2026-09-26 (v0.3.0)**: Added multi-object classification across all 80 COCO classes, PiP zoom thumbnail overlay, Telegram inline buttons.
+- **2026-09-26**: Added ultra-low-overhead pixel difference `MotionDetector` gating. Two-way Telegram bot command control. IST log timestamps. ONNX dylib loader fix. Complete Rust port.

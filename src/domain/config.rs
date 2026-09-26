@@ -14,6 +14,8 @@ pub struct SentryConfig {
     pub motion_threshold: f32,
     pub targets: Vec<String>,
     pub rotate: u32,
+    pub ignore_top_percent: u32,
+    pub retention_days: u32,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -27,6 +29,8 @@ pub struct ConfigOverrides {
     pub motion_threshold: Option<f32>,
     pub targets: Option<Vec<String>>,
     pub rotate: Option<u32>,
+    pub ignore_top_percent: Option<u32>,
+    pub retention_days: Option<u32>,
 }
 
 #[derive(Deserialize, Default, Clone)]
@@ -50,6 +54,8 @@ pub struct SentryConfigSection {
     pub motion_threshold: Option<f32>,
     pub targets: Option<Vec<String>>,
     pub rotate: Option<u32>,
+    pub ignore_top_percent: Option<u32>,
+    pub retention_days: Option<u32>,
 }
 
 #[derive(Deserialize, Default)]
@@ -125,6 +131,15 @@ impl SentryConfig {
             .or(sentry_sec.targets)
             .unwrap_or(default_targets);
 
+        let itp = overrides
+            .ignore_top_percent
+            .or(sentry_sec.ignore_top_percent)
+            .unwrap_or(0);
+        let ret_days = overrides
+            .retention_days
+            .or(sentry_sec.retention_days)
+            .unwrap_or(7);
+
         Self {
             source: src,
             model_path: resolved_model,
@@ -139,6 +154,8 @@ impl SentryConfig {
             motion_threshold: mt,
             targets,
             rotate: rot,
+            ignore_top_percent: itp,
+            retention_days: ret_days,
         }
     }
 

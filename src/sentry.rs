@@ -1,12 +1,27 @@
+pub mod replies;
+
 use crate::api::{BotCommand, TelegramClient};
 use crate::domain::{Detection, SentryConfig};
 use crate::error::{MonbanError, Result};
-use crate::infra::{MjpegStream, MotionDetector, YoloDetector};
-use chrono::{FixedOffset, Utc};
+use crate::infra::{
+    MjpegStream, MotionDetector, YoloDetector, encode_animated_gif, prune_old_evidence,
+};
 use image::{DynamicImage, ImageFormat};
+use std::collections::VecDeque;
 use std::io::Cursor;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
+
+// Rolling ring-buffer capacity for animated GIF clips (≈3s @ 10fps)
+const FRAME_BUFFER_CAP: usize = 30;
+// GIF frame delay: 100ms ≈ 10fps
+const GIF_FRAME_DELAY_MS: u32 = 100;
+// 2-frame temporal confirmation window
+const CONFIRM_WINDOW: Duration = Duration::from_millis(700);
+// Exponential back-off ceiling for stream reconnect
+const MAX_BACKOFF_SECS: u64 = 30;
+// Evidence housekeeping interval
+const PRUNE_INTERVAL: Duration = Duration::from_secs(6 * 3600);
 
 pub struct RoomSentry {
     config: SentryConfig,
@@ -16,15 +31,21 @@ pub struct RoomSentry {
     last_alert: Option<Instant>,
     last_person_seen: Option<Instant>,
     last_command_poll: Instant,
+    last_prune: Instant,
     armed: bool,
     mute_until: Option<Instant>,
     start_time: Instant,
+    /// Pending first-seen instant for 2-frame temporal confirmation
+    pending_detection: Option<Instant>,
+    /// Rolling frame ring-buffer for GIF clip generation
+    frame_buffer: VecDeque<DynamicImage>,
 }
 
 impl RoomSentry {
     pub fn new(config: SentryConfig) -> Result<Self> {
         let detector = YoloDetector::new(&config.model_path)?;
-        let motion_detector = MotionDetector::new(config.motion_threshold);
+        let motion_detector =
+            MotionDetector::new(config.motion_threshold).with_ignore_top(config.ignore_top_percent);
         let telegram = TelegramClient::new(
             config.telegram_token.clone(),
             config.telegram_chat_id.clone(),
@@ -32,6 +53,11 @@ impl RoomSentry {
 
         if !config.save_dir.exists() {
             std::fs::create_dir_all(&config.save_dir)?;
+        }
+
+        let pruned = prune_old_evidence(&config.save_dir, config.retention_days);
+        if pruned > 0 {
+            info!("Startup housekeeping: pruned {pruned} old capture(s).");
         }
 
         Ok(Self {
@@ -42,39 +68,98 @@ impl RoomSentry {
             last_alert: None,
             last_person_seen: None,
             last_command_poll: Instant::now(),
+            last_prune: Instant::now(),
             armed: true,
             mute_until: None,
             start_time: Instant::now(),
+            pending_detection: None,
+            frame_buffer: VecDeque::with_capacity(FRAME_BUFFER_CAP),
         })
     }
 
     pub fn process_frame(&mut self, image: &DynamicImage) -> Result<Vec<Detection>> {
         let has_motion = !self.config.motion_gate || self.motion_detector.check_motion(image);
-        let in_grace_period = self
+        let in_grace = self
             .last_person_seen
             .is_some_and(|t| t.elapsed() < Duration::from_secs(3));
 
-        if !has_motion && !in_grace_period {
+        self.push_frame_buffer(image.clone());
+
+        if !has_motion && !in_grace {
             debug!("Static frame: skipping YOLO inference");
+            self.pending_detection = None;
             return Ok(Vec::new());
         }
 
-        let detections = self.detector.detect(
+        let raw_detections = self.detector.detect(
             image,
             self.config.confidence_threshold,
             &self.config.targets,
         )?;
 
-        if !detections.is_empty() {
-            self.last_person_seen = Some(Instant::now());
-            if self.is_alert_enabled() {
-                self.handle_alert(image, &detections)?;
-            } else {
-                debug!("Sentry muted or disarmed: alert suppressed.");
-            }
+        let detections = self.apply_motion_mask(image, raw_detections);
+
+        if detections.is_empty() {
+            self.pending_detection = None;
+            return Ok(Vec::new());
+        }
+
+        self.last_person_seen = Some(Instant::now());
+
+        if self.is_alert_enabled() && self.temporal_confirm() {
+            self.handle_alert(image, &detections)?;
+        } else {
+            debug!("Sentry muted/disarmed or awaiting 2-frame confirmation.");
         }
 
         Ok(detections)
+    }
+
+    // ── private helpers ──────────────────────────────────────────────────────
+
+    fn push_frame_buffer(&mut self, frame: DynamicImage) {
+        if self.frame_buffer.len() >= FRAME_BUFFER_CAP {
+            self.frame_buffer.pop_front();
+        }
+        self.frame_buffer.push_back(frame);
+    }
+
+    fn apply_motion_mask(
+        &self,
+        image: &DynamicImage,
+        detections: Vec<Detection>,
+    ) -> Vec<Detection> {
+        if !self.config.motion_gate {
+            return detections;
+        }
+        let orig_w = image.width() as f32;
+        let orig_h = image.height() as f32;
+        detections
+            .into_iter()
+            .filter(|d| {
+                self.motion_detector
+                    .has_motion_in_box(&d.box_coords, orig_w, orig_h)
+            })
+            .collect()
+    }
+
+    /// Returns true once target detected on 2 consecutive frames within CONFIRM_WINDOW.
+    fn temporal_confirm(&mut self) -> bool {
+        match self.pending_detection {
+            None => {
+                self.pending_detection = Some(Instant::now());
+                false
+            }
+            Some(first_seen) if first_seen.elapsed() <= CONFIRM_WINDOW => {
+                self.pending_detection = None;
+                true
+            }
+            Some(_) => {
+                // Window expired — restart confirmation
+                self.pending_detection = Some(Instant::now());
+                false
+            }
+        }
     }
 
     fn is_alert_enabled(&self) -> bool {
@@ -91,33 +176,46 @@ impl RoomSentry {
             return Ok(());
         }
 
-        let annotated = YoloDetector::annotate_frame(image, detections);
-        let tz = FixedOffset::east_opt(19800)
-            .ok_or_else(|| MonbanError::Config("Invalid IST offset".to_string()))?;
-        let now = Utc::now().with_timezone(&tz);
-        let filename = format!("sentry_{}.jpg", now.format("%Y%m%d_%H%M%S"));
+        let now_str = replies::ist_now_str();
+        let ts = now_str.replace(" IST", "").replace(['-', ' ', ':'], "");
+        let filename = format!("sentry_{ts}.jpg");
         let save_path = self.config.save_dir.join(&filename);
 
+        let annotated = YoloDetector::annotate_frame(image, detections);
         annotated.save_with_format(&save_path, ImageFormat::Jpeg)?;
-
-        let mut jpeg_bytes = Vec::new();
-        annotated.write_to(&mut Cursor::new(&mut jpeg_bytes), ImageFormat::Jpeg)?;
 
         let summary_str = Self::format_detection_summary(detections);
         let caption = format!(
             "🚨 <b>MONBAN ALERT — Motion Detected</b>\n\n\
             {summary_str}\n\n\
-            🕒 <b>Time:</b> {}\n\
-            📁 <b>Evidence:</b> <code>{filename}</code>",
-            now.format("%Y-%m-%d %H:%M:%S IST")
+            🕒 <b>Time:</b> {now_str}\n\
+            📁 <b>Evidence:</b> <code>{filename}</code>"
         );
 
         self.last_alert = Some(Instant::now());
-        let _ = self.telegram.send_photo_alert(jpeg_bytes, &caption);
-        warn!(
-            "🚨 Alert triggered: {} target(s) detected!",
-            detections.len()
-        );
+        self.dispatch_alert_media(&caption)?;
+        warn!("🚨 Alert triggered: {} target(s) detected!", detections.len());
+        Ok(())
+    }
+
+    /// Sends animated GIF if enough frames; falls back to static JPEG.
+    fn dispatch_alert_media(&mut self, caption: &str) -> Result<()> {
+        let frames: Vec<DynamicImage> = self.frame_buffer.iter().cloned().collect();
+        if frames.len() >= 4 {
+            match encode_animated_gif(&frames, GIF_FRAME_DELAY_MS) {
+                Ok(gif_bytes) => {
+                    let _ = self.telegram.send_animation_alert(gif_bytes, caption);
+                    return Ok(());
+                }
+                Err(e) => warn!("GIF encode failed, falling back to JPEG: {e}"),
+            }
+        }
+        // Fallback: static JPEG from latest frame
+        if let Some(frame) = self.frame_buffer.back() {
+            let mut jpeg_bytes = Vec::new();
+            frame.write_to(&mut Cursor::new(&mut jpeg_bytes), ImageFormat::Jpeg)?;
+            let _ = self.telegram.send_photo_alert(jpeg_bytes, caption);
+        }
         Ok(())
     }
 
@@ -152,7 +250,14 @@ impl RoomSentry {
         current_frame: Option<&DynamicImage>,
     ) -> Result<()> {
         match cmd {
-            BotCommand::Status => self.send_status_reply()?,
+            BotCommand::Status => replies::send_status(
+                &self.telegram,
+                &self.config,
+                self.armed,
+                self.mute_until,
+                self.last_alert,
+                self.start_time,
+            )?,
             BotCommand::Arm => {
                 self.armed = true;
                 self.mute_until = None;
@@ -171,140 +276,34 @@ impl RoomSentry {
             }
             BotCommand::Mute(mins) => self.mute_alerts(mins)?,
             BotCommand::Snap => match current_frame {
-                Some(frame) => self.send_snapshot_reply(frame)?,
+                Some(frame) => replies::send_snapshot(
+                    &self.telegram,
+                    &mut self.detector,
+                    &self.config,
+                    frame,
+                )?,
                 None => {
                     self.telegram
                         .send_message("⚠️ Camera frame not yet available for snapshot.")?;
                 }
             },
-            BotCommand::Help => self.send_help_reply()?,
+            BotCommand::Help => replies::send_help(&self.telegram)?,
         }
         Ok(())
     }
 
     fn mute_alerts(&mut self, mins: u64) -> Result<()> {
-        let duration = Duration::from_secs(mins * 60);
-        self.mute_until = Some(Instant::now() + duration);
-        let unmute_time_str = match FixedOffset::east_opt(19800) {
-            Some(tz) => (Utc::now() + chrono::Duration::minutes(mins as i64))
-                .with_timezone(&tz)
-                .format("%H:%M:%S IST")
-                .to_string(),
-            None => (Utc::now() + chrono::Duration::minutes(mins as i64))
-                .format("%H:%M:%S UTC")
-                .to_string(),
-        };
-        self.telegram.send_message(&format!(
-            "🛡️ <b>SENTRY MUTED FOR {}m</b>\nAlerts will automatically resume at {}.",
-            mins, unmute_time_str
-        ))?;
-        info!("Sentry MUTED for {mins} minutes via Telegram command.");
-        Ok(())
+        replies::mute_alerts(&self.telegram, &mut self.mute_until, mins)
     }
 
-    fn send_help_reply(&self) -> Result<()> {
-        self.telegram.send_message(
-            "🥋 <b>門番 (Monban) Guardian Commands</b>\n\n\
-            • <code>/status</code> — Current sentry health & statistics\n\
-            • <code>/snap</code> — Real-time camera snapshot\n\
-            • <code>/mute</code> — Mute alerts for 10 minutes\n\
-            • <code>/arm</code> — Enable intruder alerts\n\
-            • <code>/disarm</code> — Mute intruder alerts\n\
-            • <code>/help</code> — Show this commands menu",
-        )?;
-        Ok(())
-    }
-
-    fn send_status_reply(&self) -> Result<()> {
-        let uptime = self.start_time.elapsed().as_secs();
-        let uptime_str = format!(
-            "{}h {}m {}s",
-            uptime / 3600,
-            (uptime % 3600) / 60,
-            uptime % 60
-        );
-
-        let arm_str = if !self.is_alert_enabled() {
-            match self.mute_until {
-                Some(until) => format!(
-                    "🛡️ <b>MUTED</b> ({}s remaining)",
-                    until.saturating_duration_since(Instant::now()).as_secs()
-                ),
-                None => "🛑 <b>DISARMED</b>".to_string(),
+    fn run_housekeeping(&mut self) {
+        if self.last_prune.elapsed() >= PRUNE_INTERVAL {
+            self.last_prune = Instant::now();
+            let pruned = prune_old_evidence(&self.config.save_dir, self.config.retention_days);
+            if pruned > 0 {
+                info!("Periodic housekeeping: pruned {pruned} old capture(s).");
             }
-        } else {
-            "⚔️ <b>ARMED</b>".to_string()
-        };
-
-        let mg_str = if self.config.motion_gate {
-            "Active (128x96)"
-        } else {
-            "Disabled"
-        };
-        let last_alert_str = self
-            .last_alert
-            .map(|t| format!("{}s ago", t.elapsed().as_secs()))
-            .unwrap_or_else(|| "None".to_string());
-
-        let msg = format!(
-            "🥋 <b>MONBAN SENTRY STATUS</b>\n\n\
-            State: {}\n\
-            Motion Gate: <code>{}</code>\n\
-            Cooldown: <code>{}s</code>\n\
-            Uptime: <code>{}</code>\n\
-            Last Alert: <code>{}</code>\n\
-            Stream: <code>{}</code>",
-            arm_str,
-            mg_str,
-            self.config.cooldown_seconds,
-            uptime_str,
-            last_alert_str,
-            self.config.source
-        );
-
-        self.telegram.send_message(&msg)?;
-        Ok(())
-    }
-
-    fn send_snapshot_reply(&mut self, frame: &DynamicImage) -> Result<()> {
-        let detections = self
-            .detector
-            .detect(
-                frame,
-                self.config.confidence_threshold,
-                &self.config.targets,
-            )
-            .unwrap_or_default();
-
-        let annotated = YoloDetector::annotate_frame(frame, &detections);
-        let mut jpeg_bytes = Vec::new();
-        annotated.write_to(&mut Cursor::new(&mut jpeg_bytes), ImageFormat::Jpeg)?;
-
-        let now_str = match FixedOffset::east_opt(19800) {
-            Some(tz) => Utc::now()
-                .with_timezone(&tz)
-                .format("%Y-%m-%d %H:%M:%S IST")
-                .to_string(),
-            None => Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
-        };
-
-        let detected_summary = if detections.is_empty() {
-            "None (All Clear)".to_string()
-        } else {
-            let max_conf = detections
-                .iter()
-                .map(|d| d.confidence)
-                .fold(0.0f32, f32::max);
-            format!("Target Detected ({:.1}%)", max_conf * 100.0)
-        };
-
-        let caption = format!(
-            "📸 <b>Manual Snapshot Requested</b>\n\n🕒 <b>Time:</b> {now_str}\n🎯 <b>Status:</b> {detected_summary}"
-        );
-
-        self.telegram.send_photo_alert(jpeg_bytes, &caption)?;
-        info!("Manual snapshot dispatched to Telegram.");
-        Ok(())
+        }
     }
 
     fn orient_frame(&self, frame: DynamicImage) -> DynamicImage {
@@ -319,56 +318,80 @@ impl RoomSentry {
     pub fn run_test(&mut self) -> Result<()> {
         info!("Running single-frame test mode on: {}", self.config.source);
         let stream = MjpegStream::connect(&self.config.source)?;
-
         let start = Instant::now();
         let raw_frame = loop {
-            if let Ok(f) = stream.read_latest_frame() {
-                break f;
-            }
+            if let Ok(f) = stream.read_latest_frame() { break f; }
             if start.elapsed() > Duration::from_secs(4) {
-                return Err(MonbanError::Stream(
-                    "Timed out waiting for camera frame".to_string(),
-                ));
+                return Err(MonbanError::Stream("Timed out waiting for camera frame".into()));
             }
             std::thread::sleep(Duration::from_millis(100));
         };
-
         let frame = self.orient_frame(raw_frame);
         let test_path = self.config.save_dir.join("test_snapshot_rs.jpg");
         frame.save_with_format(&test_path, ImageFormat::Jpeg)?;
         info!("Saved raw test frame to {:?}", test_path);
-
         let detections = self.process_frame(&frame)?;
-        info!(
-            "Test frame processed. Found {} target(s).",
-            detections.len()
-        );
+        info!("Test frame processed. Found {} target(s).", detections.len());
         Ok(())
     }
 
     pub fn run_loop(&mut self) -> Result<()> {
         info!("Starting Monban Sentry on: {}", self.config.source);
-        let stream = MjpegStream::connect(&self.config.source)?;
+        let mut backoff_secs: u64 = 2;
 
-        loop {
-            match stream.read_latest_frame() {
-                Ok(raw_frame) => {
-                    let frame = self.orient_frame(raw_frame);
-                    if let Err(e) = self.process_frame(&frame) {
-                        warn!("Error processing frame: {e}");
+        'outer: loop {
+            let stream = match MjpegStream::connect(&self.config.source) {
+                Ok(s) => {
+                    if backoff_secs > 2 {
+                        let _ = self
+                            .telegram
+                            .send_message("✅ <b>Camera reconnected.</b> Sentry resumed.");
+                        info!("Camera reconnected.");
                     }
-                    if let Err(e) = self.handle_commands(Some(&frame)) {
-                        warn!("Error handling bot commands: {e}");
+                    backoff_secs = 2;
+                    s
+                }
+                Err(e) => {
+                    warn!("Camera connect failed: {e}. Retrying in {backoff_secs}s…");
+                    let _ = self.telegram.send_message(&format!(
+                        "⚠️ <b>Camera disconnected.</b> Retrying in {backoff_secs}s…"
+                    ));
+                    std::thread::sleep(Duration::from_secs(backoff_secs));
+                    backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
+                    continue;
+                }
+            };
+
+            loop {
+                match stream.read_latest_frame() {
+                    Ok(raw_frame) => {
+                        backoff_secs = 2;
+                        let frame = self.orient_frame(raw_frame);
+                        if let Err(e) = self.process_frame(&frame) {
+                            warn!("Error processing frame: {e}");
+                        }
+                        if let Err(e) = self.handle_commands(Some(&frame)) {
+                            warn!("Error handling bot commands: {e}");
+                        }
+                        self.run_housekeeping();
+                    }
+                    Err(MonbanError::Stream(_)) => {
+                        if let Err(e) = self.handle_commands(None) {
+                            warn!("Error handling bot commands: {e}");
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Fatal stream error: {e}. Reconnecting in {backoff_secs}s…");
+                        let _ = self.telegram.send_message(&format!(
+                            "⚠️ <b>Camera disconnected.</b> Retrying in {backoff_secs}s…"
+                        ));
+                        std::thread::sleep(Duration::from_secs(backoff_secs));
+                        backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
+                        continue 'outer;
                     }
                 }
-                Err(MonbanError::Stream(_)) => {
-                    if let Err(e) = self.handle_commands(None) {
-                        warn!("Error handling bot commands: {e}");
-                    }
-                }
-                Err(e) => return Err(e),
+                std::thread::sleep(Duration::from_millis(50));
             }
-            std::thread::sleep(Duration::from_millis(50));
         }
     }
 }

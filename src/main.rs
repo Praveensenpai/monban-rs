@@ -116,6 +116,8 @@ fn main() -> Result<()> {
         motion_threshold: Some(args.motion_threshold),
         targets,
         rotate,
+        ignore_top_percent: args.ignore_top,
+        retention_days: args.retention_days,
     });
 
     let mut sentry = RoomSentry::new(config)?;

@@ -21,6 +21,7 @@ pub enum BotCommand {
 pub enum OutgoingMessage {
     Text(String),
     Photo { bytes: Vec<u8>, caption: String },
+    Animation { bytes: Vec<u8>, caption: String },
 }
 
 fn guardian_inline_markup() -> &'static str {
@@ -132,6 +133,24 @@ impl TelegramClient {
         }
     }
 
+    pub fn send_animation_alert(&self, gif_bytes: Vec<u8>, caption: &str) -> Result<bool> {
+        let Some(sender) = &self.sender else {
+            warn!("Telegram not configured. Skipping animation dispatch.");
+            return Ok(false);
+        };
+        match sender.try_send(OutgoingMessage::Animation {
+            bytes: gif_bytes,
+            caption: caption.to_string(),
+        }) {
+            Ok(_) => Ok(true),
+            Err(TrySendError::Full(_)) => {
+                warn!("Telegram queue full. Dropping animation alert.");
+                Ok(false)
+            }
+            Err(TrySendError::Disconnected(_)) => Ok(false),
+        }
+    }
+
     fn spawn_dispatcher(
         token: String,
         chat_id: String,
@@ -215,6 +234,38 @@ impl TelegramClient {
                 } else {
                     error!(
                         "Telegram error ({}): {:?}",
+                        response.status(),
+                        response.text()
+                    );
+                    Ok(false)
+                }
+            }
+            OutgoingMessage::Animation { bytes, caption } => {
+                let url = format!("https://api.telegram.org/bot{token}/sendAnimation");
+                let part = Part::bytes(bytes.clone())
+                    .file_name("motion.gif")
+                    .mime_str("image/gif")
+                    .map_err(|e| MonbanError::Config(e.to_string()))?;
+
+                let form = Form::new()
+                    .text("chat_id", chat_id.to_string())
+                    .text("caption", caption.clone())
+                    .text("parse_mode", "HTML")
+                    .text("reply_markup", guardian_inline_markup())
+                    .part("animation", part);
+
+                let response = client.post(&url).multipart(form).send()?;
+                if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    let delay = Self::parse_retry_after(&response);
+                    thread::sleep(Duration::from_secs(delay));
+                    return Ok(false);
+                }
+                if response.status().is_success() {
+                    info!("Telegram animated clip dispatched successfully.");
+                    Ok(true)
+                } else {
+                    error!(
+                        "Telegram animation error ({}): {:?}",
                         response.status(),
                         response.text()
                     );
