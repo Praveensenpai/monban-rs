@@ -16,6 +16,16 @@ pub struct SentryConfig {
     pub rotate: u32,
     pub ignore_top_percent: u32,
     pub retention_days: u32,
+    /// Inclusion zone [x1,y1,x2,y2] as 0.0–1.0 fractions; None = whole frame.
+    pub watch_rect: Option<[f32; 4]>,
+    /// Home Assistant / generic webhook URL; empty string = disabled.
+    pub webhook_url: String,
+    /// Send a "still alive" heartbeat every N hours.
+    pub heartbeat_hours: u64,
+    /// Auto-raise motion threshold on persistently noisy scenes.
+    pub adaptive_motion: bool,
+    /// Additional camera sources for multi-camera mode.
+    pub extra_sources: Vec<String>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -31,6 +41,11 @@ pub struct ConfigOverrides {
     pub rotate: Option<u32>,
     pub ignore_top_percent: Option<u32>,
     pub retention_days: Option<u32>,
+    pub watch_rect: Option<[f32; 4]>,
+    pub webhook_url: Option<String>,
+    pub heartbeat_hours: Option<u64>,
+    pub adaptive_motion: Option<bool>,
+    pub extra_sources: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Default, Clone)]
@@ -56,6 +71,10 @@ pub struct SentryConfigSection {
     pub rotate: Option<u32>,
     pub ignore_top_percent: Option<u32>,
     pub retention_days: Option<u32>,
+    pub webhook_url: Option<String>,
+    pub heartbeat_hours: Option<u64>,
+    pub adaptive_motion: Option<bool>,
+    pub extra_sources: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -139,6 +158,22 @@ impl SentryConfig {
             .retention_days
             .or(sentry_sec.retention_days)
             .unwrap_or(7);
+        let webhook_url = overrides
+            .webhook_url
+            .or(sentry_sec.webhook_url)
+            .unwrap_or_default();
+        let heartbeat_hours = overrides
+            .heartbeat_hours
+            .or(sentry_sec.heartbeat_hours)
+            .unwrap_or(24);
+        let adaptive_motion = overrides
+            .adaptive_motion
+            .or(sentry_sec.adaptive_motion)
+            .unwrap_or(false);
+        let extra_sources = overrides
+            .extra_sources
+            .or(sentry_sec.extra_sources)
+            .unwrap_or_default();
 
         Self {
             source: src,
@@ -156,6 +191,11 @@ impl SentryConfig {
             rotate: rot,
             ignore_top_percent: itp,
             retention_days: ret_days,
+            watch_rect: overrides.watch_rect,
+            webhook_url,
+            heartbeat_hours,
+            adaptive_motion,
+            extra_sources,
         }
     }
 

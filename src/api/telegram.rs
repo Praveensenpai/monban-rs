@@ -1,67 +1,15 @@
+pub mod types;
+
+pub use types::{BotCommand, OutgoingMessage};
+use types::{CallbackQueryItem, MediaPayload, UpdateResponse, guardian_inline_markup};
+
 use crate::error::{MonbanError, Result};
 use reqwest::blocking::Client;
 use reqwest::blocking::multipart::{Form, Part};
-use serde::Deserialize;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BotCommand {
-    Status,
-    Arm,
-    Disarm,
-    Mute(u64),
-    Snap,
-    Help,
-}
-
-#[derive(Debug, Clone)]
-pub enum OutgoingMessage {
-    Text(String),
-    Photo { bytes: Vec<u8>, caption: String },
-    Animation { bytes: Vec<u8>, caption: String },
-}
-
-fn guardian_inline_markup() -> &'static str {
-    r#"{"inline_keyboard":[[{"text":"📸 Snapshot","callback_data":"snap"},{"text":"🛡️ Mute 10m","callback_data":"mute_10"}],[{"text":"⚔️ Arm","callback_data":"arm"},{"text":"🛑 Disarm","callback_data":"disarm"}]]}"#
-}
-
-#[derive(Deserialize)]
-struct UpdateResponse {
-    result: Option<Vec<UpdateItem>>,
-}
-
-#[derive(Deserialize)]
-struct UpdateItem {
-    update_id: i64,
-    message: Option<MessageItem>,
-    callback_query: Option<CallbackQueryItem>,
-}
-
-#[derive(Deserialize)]
-struct MessageItem {
-    chat: ChatItem,
-    text: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct ChatItem {
-    id: i64,
-}
-
-#[derive(Deserialize)]
-struct CallbackQueryItem {
-    id: String,
-    from: UserItem,
-    data: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct UserItem {
-    id: i64,
-}
 
 #[derive(Clone)]
 pub struct TelegramClient {
@@ -151,6 +99,24 @@ impl TelegramClient {
         }
     }
 
+    pub fn send_video_alert(&self, video_bytes: Vec<u8>, caption: &str) -> Result<bool> {
+        let Some(sender) = &self.sender else {
+            warn!("Telegram not configured. Skipping video dispatch.");
+            return Ok(false);
+        };
+        match sender.try_send(OutgoingMessage::Video {
+            bytes: video_bytes,
+            caption: caption.to_string(),
+        }) {
+            Ok(_) => Ok(true),
+            Err(TrySendError::Full(_)) => {
+                warn!("Telegram queue full. Dropping video alert.");
+                Ok(false)
+            }
+            Err(TrySendError::Disconnected(_)) => Ok(false),
+        }
+    }
+
     fn spawn_dispatcher(
         token: String,
         chat_id: String,
@@ -208,70 +174,84 @@ impl TelegramClient {
                 }
                 Ok(response.status().is_success())
             }
-            OutgoingMessage::Photo { bytes, caption } => {
-                let url = format!("https://api.telegram.org/bot{token}/sendPhoto");
-                let part = Part::bytes(bytes.clone())
-                    .file_name("alert.jpg")
-                    .mime_str("image/jpeg")
-                    .map_err(|e| MonbanError::Config(e.to_string()))?;
+            OutgoingMessage::Photo { bytes, caption } => Self::dispatch_media(
+                client,
+                token,
+                chat_id,
+                &MediaPayload {
+                    endpoint: "sendPhoto",
+                    field: "photo",
+                    filename: "alert.jpg",
+                    mime: "image/jpeg",
+                    bytes,
+                    caption,
+                },
+            ),
+            OutgoingMessage::Animation { bytes, caption } => Self::dispatch_media(
+                client,
+                token,
+                chat_id,
+                &MediaPayload {
+                    endpoint: "sendAnimation",
+                    field: "animation",
+                    filename: "motion.gif",
+                    mime: "image/gif",
+                    bytes,
+                    caption,
+                },
+            ),
+            OutgoingMessage::Video { bytes, caption } => Self::dispatch_media(
+                client,
+                token,
+                chat_id,
+                &MediaPayload {
+                    endpoint: "sendVideo",
+                    field: "video",
+                    filename: "clip.mp4",
+                    mime: "video/mp4",
+                    bytes,
+                    caption,
+                },
+            ),
+        }
+    }
 
-                let form = Form::new()
-                    .text("chat_id", chat_id.to_string())
-                    .text("caption", caption.clone())
-                    .text("parse_mode", "HTML")
-                    .text("reply_markup", guardian_inline_markup())
-                    .part("photo", part);
+    fn dispatch_media(
+        client: &Client,
+        token: &str,
+        chat_id: &str,
+        p: &MediaPayload<'_>,
+    ) -> Result<bool> {
+        let url = format!("https://api.telegram.org/bot{token}/{}", p.endpoint);
+        let part = Part::bytes(p.bytes.to_vec())
+            .file_name(p.filename)
+            .mime_str(p.mime)
+            .map_err(|e| MonbanError::Config(e.to_string()))?;
 
-                let response = client.post(&url).multipart(form).send()?;
-                if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                    let delay = Self::parse_retry_after(&response);
-                    thread::sleep(Duration::from_secs(delay));
-                    return Ok(false);
-                }
-                if response.status().is_success() {
-                    info!("Telegram alert dispatched successfully.");
-                    Ok(true)
-                } else {
-                    error!(
-                        "Telegram error ({}): {:?}",
-                        response.status(),
-                        response.text()
-                    );
-                    Ok(false)
-                }
-            }
-            OutgoingMessage::Animation { bytes, caption } => {
-                let url = format!("https://api.telegram.org/bot{token}/sendAnimation");
-                let part = Part::bytes(bytes.clone())
-                    .file_name("motion.gif")
-                    .mime_str("image/gif")
-                    .map_err(|e| MonbanError::Config(e.to_string()))?;
+        let form = Form::new()
+            .text("chat_id", chat_id.to_string())
+            .text("caption", p.caption.to_string())
+            .text("parse_mode", "HTML")
+            .text("reply_markup", guardian_inline_markup())
+            .part(p.field, part);
 
-                let form = Form::new()
-                    .text("chat_id", chat_id.to_string())
-                    .text("caption", caption.clone())
-                    .text("parse_mode", "HTML")
-                    .text("reply_markup", guardian_inline_markup())
-                    .part("animation", part);
-
-                let response = client.post(&url).multipart(form).send()?;
-                if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                    let delay = Self::parse_retry_after(&response);
-                    thread::sleep(Duration::from_secs(delay));
-                    return Ok(false);
-                }
-                if response.status().is_success() {
-                    info!("Telegram animated clip dispatched successfully.");
-                    Ok(true)
-                } else {
-                    error!(
-                        "Telegram animation error ({}): {:?}",
-                        response.status(),
-                        response.text()
-                    );
-                    Ok(false)
-                }
-            }
+        let response = client.post(&url).multipart(form).send()?;
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let delay = Self::parse_retry_after(&response);
+            thread::sleep(Duration::from_secs(delay));
+            return Ok(false);
+        }
+        if response.status().is_success() {
+            info!("Telegram {} dispatched successfully.", p.endpoint);
+            Ok(true)
+        } else {
+            error!(
+                "Telegram {} error ({}): {:?}",
+                p.endpoint,
+                response.status(),
+                response.text()
+            );
+            Ok(false)
         }
     }
 
@@ -358,6 +338,10 @@ impl TelegramClient {
                 let _ = self.answer_callback(&cq.id, "📸 Capturing snapshot...");
                 Some(BotCommand::Snap)
             }
+            "stats" => {
+                let _ = self.answer_callback(&cq.id, "📊 Gathering sentry statistics...");
+                Some(BotCommand::Stats)
+            }
             "mute_10" => {
                 let _ = self.answer_callback(&cq.id, "🛡️ Muted for 10 minutes");
                 Some(BotCommand::Mute(10))
@@ -381,6 +365,7 @@ impl TelegramClient {
 
         match clean_cmd {
             "/status" => Some(BotCommand::Status),
+            "/stats" => Some(BotCommand::Stats),
             "/arm" => Some(BotCommand::Arm),
             "/disarm" => Some(BotCommand::Disarm),
             "/mute" => Some(BotCommand::Mute(10)),

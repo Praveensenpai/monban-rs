@@ -106,6 +106,28 @@ fn main() -> Result<()> {
         None
     };
 
+    let watch_rect = args.watch_rect.and_then(|s| {
+        let parts: Vec<f32> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+        if parts.len() == 4 {
+            Some([parts[0], parts[1], parts[2], parts[3]])
+        } else {
+            None
+        }
+    });
+
+    let extra_sources = args.extra_sources.map(|s| {
+        s.split(',')
+            .map(|u| u.trim().to_string())
+            .filter(|u| !u.is_empty())
+            .collect()
+    });
+
+    let adaptive_motion = if args.adaptive_motion {
+        Some(true)
+    } else {
+        None
+    };
+
     let config = SentryConfig::load_with_defaults(ConfigOverrides {
         source: Some(args.source),
         model_path: args.model,
@@ -118,7 +140,24 @@ fn main() -> Result<()> {
         rotate,
         ignore_top_percent: args.ignore_top,
         retention_days: args.retention_days,
+        watch_rect,
+        webhook_url: args.webhook_url,
+        heartbeat_hours: args.heartbeat_hours,
+        adaptive_motion,
+        extra_sources,
     });
+
+    if !config.extra_sources.is_empty() && !args.test {
+        for extra_src in &config.extra_sources {
+            let mut extra_cfg = config.clone();
+            extra_cfg.source = extra_src.clone();
+            std::thread::spawn(move || {
+                if let Ok(mut extra_sentry) = RoomSentry::new(extra_cfg) {
+                    let _ = extra_sentry.run_loop();
+                }
+            });
+        }
+    }
 
     let mut sentry = RoomSentry::new(config)?;
 

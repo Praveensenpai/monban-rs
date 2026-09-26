@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[command(
     name = "monban",
     author = "paisen",
-    version = "0.3.6",
+    version = "0.5.0",
     about = "🥋 門番 (Monban) — Zero-Bloat Rust AI Room & Door Sentry"
 )]
 pub struct CliArgs {
@@ -88,6 +88,36 @@ pub struct CliArgs {
         help = "Number of days to keep evidence snapshots before pruning (defaults to 7)"
     )]
     pub retention_days: Option<u32>,
+
+    #[arg(
+        long,
+        help = "Inclusion zone coordinates x1,y1,x2,y2 as 0.0-1.0 fractions (e.g. 0.1,0.2,0.8,0.9)"
+    )]
+    pub watch_rect: Option<String>,
+
+    #[arg(
+        long,
+        help = "Home Assistant or generic webhook URL to trigger on alert"
+    )]
+    pub webhook_url: Option<String>,
+
+    #[arg(
+        long,
+        help = "Hours between alive heartbeat messages to Telegram (default: 24)"
+    )]
+    pub heartbeat_hours: Option<u64>,
+
+    #[arg(
+        long,
+        help = "Enable adaptive motion threshold that auto-tunes to scene background noise"
+    )]
+    pub adaptive_motion: bool,
+
+    #[arg(
+        long,
+        help = "Comma-separated extra video stream URLs for multi-camera support"
+    )]
+    pub extra_sources: Option<String>,
 
     #[arg(short, long, help = "Enable verbose debug logging")]
     pub verbose: bool,

@@ -33,13 +33,19 @@ pub fn mute_alerts(
 pub fn send_help(telegram: &TelegramClient) -> Result<()> {
     telegram.send_message(
         "🥋 <b>門番 (Monban) Guardian Commands</b>\n\n\
-        • <code>/status</code> — Current sentry health &amp; statistics\n\
+        • <code>/status</code> — Current sentry health\n\
+        • <code>/stats</code> — In-memory alert stats & hourly histogram\n\
         • <code>/snap</code> — Real-time camera snapshot\n\
         • <code>/mute</code> — Mute alerts for 10 minutes\n\
         • <code>/arm</code> — Enable intruder alerts\n\
         • <code>/disarm</code> — Mute intruder alerts\n\
         • <code>/help</code> — Show this commands menu",
     )?;
+    Ok(())
+}
+
+pub fn send_stats(telegram: &TelegramClient, stats: &crate::domain::SentryStats) -> Result<()> {
+    telegram.send_message(&stats.format_message())?;
     Ok(())
 }
 
@@ -141,8 +147,7 @@ fn snap_summary(detections: &[Detection]) -> String {
 }
 
 fn build_arm_str(armed: bool, mute_until: Option<Instant>) -> String {
-    let is_alert_enabled =
-        armed && mute_until.is_none_or(|until| Instant::now() >= until);
+    let is_alert_enabled = armed && mute_until.is_none_or(|until| Instant::now() >= until);
     if !is_alert_enabled {
         match mute_until {
             Some(until) => format!(

@@ -9,6 +9,10 @@ pub struct MotionDetector {
     target_height: u32,
     ignore_top_percent: u32,
     motion_mask: Vec<bool>,
+    /// When true, threshold auto-raises when background noise is persistently high.
+    adaptive: bool,
+    /// Exponential moving average of recent motion ratios (α=0.05).
+    noise_ema: f32,
 }
 
 impl MotionDetector {
@@ -21,11 +25,18 @@ impl MotionDetector {
             target_height: 96,
             ignore_top_percent: 0,
             motion_mask: Vec::new(),
+            adaptive: false,
+            noise_ema: 0.0,
         }
     }
 
     pub fn with_ignore_top(mut self, percent: u32) -> Self {
         self.ignore_top_percent = percent.min(90);
+        self
+    }
+
+    pub fn with_adaptive(mut self, enabled: bool) -> Self {
+        self.adaptive = enabled;
         self
     }
 
@@ -79,7 +90,17 @@ impl MotionDetector {
             return false;
         }
         let ratio = changed_pixels as f32 / active_monitored_pixels as f32;
-        ratio >= self.threshold
+
+        // Adaptive: update EMA and derive effective threshold
+        let effective_threshold = if self.adaptive {
+            self.noise_ema = self.noise_ema * 0.95 + ratio * 0.05;
+            // Only raise threshold if background noise is persistently double the base
+            self.threshold.max(self.noise_ema * 2.0)
+        } else {
+            self.threshold
+        };
+
+        ratio >= effective_threshold
     }
 
     /// Checks whether a given bounding box in original image coordinates overlaps with active motion.
