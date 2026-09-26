@@ -81,13 +81,30 @@ cargo build --release
 
 ```text
 Options:
-  -s, --source <SOURCE>          Video stream URL (http://...) [default: http://192.168.1.36:4747/video]
-  -m, --model <MODEL>            Path to YOLOv8 ONNX model [default: yolov8n.onnx]
-  -c, --confidence <CONFIDENCE>  Detection confidence threshold (0.0 - 1.0) [default: 0.35]
-      --cooldown <COOLDOWN>      Seconds between Telegram alerts [default: 30]
-      --save-dir <SAVE_DIR>      Directory to save snapshot evidence [default: captures]
-      --test                     Test mode: capture 1 frame, check detection, and exit
-  -v, --verbose                  Enable verbose debug logging
-  -h, --help                     Print help
-  -V, --version                  Print version
+  -s, --source <SOURCE>
+          Video stream URL (http://...) [default: http://192.168.1.36:4747/video]
+  -m, --model <MODEL>
+          Path to YOLOv8 ONNX model (defaults to yolov8n.onnx or ~/.local/share/monban/yolov8n.onnx)
+  -c, --confidence <CONFIDENCE>
+          Detection confidence threshold (0.0 - 1.0) [default: 0.4]
+      --targets <TARGETS>
+          Comma-separated target classes to detect (default: person,dog,cat,cow,bird,horse,sheep,bear,elephant,car,motorcycle,bicycle)
+      --cooldown <COOLDOWN>
+          Seconds between Telegram alerts [default: 5]
+      --save-dir <SAVE_DIR>
+          Directory to save snapshot evidence [default: captures]
+      --test
+          Test mode: capture 1 frame, check detection, and exit
+      --setup
+          Run interactive setup wizard to configure dedicated Telegram bot
+      --motion-threshold <MOTION_THRESHOLD>
+          Pixel difference threshold ratio for motion detection gating (0.0005 - 1.0) [default: 0.005]
+      --no-motion-gate
+          Disable motion gating and run YOLO inference on every frame
+  -v, --verbose
+          Enable verbose debug logging
+  -h, --help
+          Print help
+  -V, --version
+          Print version
 ```

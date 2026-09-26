@@ -66,9 +66,11 @@ impl RoomSentry {
             return Ok(Vec::new());
         }
 
-        let detections = self
-            .detector
-            .detect(image, self.config.confidence_threshold)?;
+        let detections = self.detector.detect(
+            image,
+            self.config.confidence_threshold,
+            &self.config.targets,
+        )?;
 
         if !detections.is_empty() {
             self.last_person_seen = Some(Instant::now());
@@ -107,11 +109,9 @@ impl RoomSentry {
         }
 
         let annotated = YoloDetector::annotate_frame(image, detections);
-        let ist_offset = match FixedOffset::east_opt(19800) {
-            Some(offset) => offset,
-            None => return Err(MonbanError::Config("Invalid IST offset".to_string())),
-        };
-        let now = Utc::now().with_timezone(&ist_offset);
+        let tz = FixedOffset::east_opt(19800)
+            .ok_or_else(|| MonbanError::Config("Invalid IST offset".to_string()))?;
+        let now = Utc::now().with_timezone(&tz);
         let filename = format!("sentry_{}.jpg", now.format("%Y%m%d_%H%M%S"));
         let save_path = self.config.save_dir.join(&filename);
 
@@ -123,12 +123,10 @@ impl RoomSentry {
         let summary_str = Self::format_detection_summary(detections);
         let caption = format!(
             "🚨 <b>MONBAN ALERT — Motion Detected</b>\n\n\
-            {}\n\n\
+            {summary_str}\n\n\
             🕒 <b>Time:</b> {}\n\
-            📁 <b>Evidence:</b> <code>{}</code>",
-            summary_str,
-            now.format("%Y-%m-%d %H:%M:%S IST"),
-            filename
+            📁 <b>Evidence:</b> <code>{filename}</code>",
+            now.format("%Y-%m-%d %H:%M:%S IST")
         );
 
         let _ = self.telegram.send_photo_alert(jpeg_bytes, &caption);
@@ -300,15 +298,18 @@ impl RoomSentry {
     fn send_snapshot_reply(&mut self, frame: &DynamicImage) -> Result<()> {
         let detections = self
             .detector
-            .detect(frame, self.config.confidence_threshold)
+            .detect(
+                frame,
+                self.config.confidence_threshold,
+                &self.config.targets,
+            )
             .unwrap_or_default();
 
         let annotated = YoloDetector::annotate_frame(frame, &detections);
         let mut jpeg_bytes = Vec::new();
         annotated.write_to(&mut Cursor::new(&mut jpeg_bytes), ImageFormat::Jpeg)?;
 
-        let ist_offset = FixedOffset::east_opt(19800);
-        let now_str = match ist_offset {
+        let now_str = match FixedOffset::east_opt(19800) {
             Some(tz) => Utc::now()
                 .with_timezone(&tz)
                 .format("%Y-%m-%d %H:%M:%S IST")
@@ -316,11 +317,17 @@ impl RoomSentry {
             None => Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
         };
 
-        let mut lines = Vec::new();
-        for d in &detections {
-            let emoji = crate::domain::class_emoji(&d.label);
-            lines.push(format!("{emoji} {}: {:.1}%", d.label, d.confidence * 100.0));
-        }
+        let lines: Vec<String> = detections
+            .iter()
+            .map(|d| {
+                format!(
+                    "{} {}: {:.1}%",
+                    crate::domain::class_emoji(&d.label),
+                    d.label,
+                    d.confidence * 100.0
+                )
+            })
+            .collect();
         let detected_summary = if lines.is_empty() {
             "None (All Clear)".to_string()
         } else {
@@ -328,10 +335,7 @@ impl RoomSentry {
         };
 
         let caption = format!(
-            "📸 <b>Manual Snapshot Requested</b>\n\n\
-            🕒 <b>Time:</b> {}\n\
-            🎯 <b>Objects Visible:</b> {}",
-            now_str, detected_summary
+            "📸 <b>Manual Snapshot Requested</b>\n\n🕒 <b>Time:</b> {now_str}\n🎯 <b>Objects Visible:</b> {detected_summary}"
         );
 
         self.telegram.send_photo_alert(jpeg_bytes, &caption)?;

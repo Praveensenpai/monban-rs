@@ -71,7 +71,12 @@ impl YoloDetector {
         }
     }
 
-    pub fn detect(&mut self, image: &DynamicImage, threshold: f32) -> Result<Vec<Detection>> {
+    pub fn detect(
+        &mut self,
+        image: &DynamicImage,
+        threshold: f32,
+        targets: &[String],
+    ) -> Result<Vec<Detection>> {
         let (orig_w, orig_h) = image.dimensions();
         let (input_array, letterbox) = Self::preprocess(image, self.input_size);
         let input_tensor = Tensor::from_array(input_array)?;
@@ -89,6 +94,7 @@ impl YoloDetector {
             orig_h as f32,
             &letterbox,
             threshold,
+            targets,
         )?;
 
         Ok(Self::apply_nms(candidates, NMS_IOU_THRESHOLD))
@@ -126,6 +132,7 @@ impl YoloDetector {
         orig_h: f32,
         info: &LetterboxInfo,
         threshold: f32,
+        targets: &[String],
     ) -> Result<Vec<Detection>> {
         if shape.len() != 3 {
             return Err(MonbanError::Stream(
@@ -147,6 +154,15 @@ impl YoloDetector {
             }
 
             if best_class_score >= threshold {
+                let label = match crate::domain::COCO_CLASSES.get(best_class_idx) {
+                    Some(l) => *l,
+                    None => "unknown",
+                };
+
+                if !targets.is_empty() && !targets.iter().any(|t| t == label) {
+                    continue;
+                }
+
                 let box_cx = data[i];
                 let box_cy = data[num_anchors + i];
                 let box_w = data[2 * num_anchors + i];
@@ -161,11 +177,6 @@ impl YoloDetector {
                 let y1 = (cy - h / 2.0).max(0.0).min(orig_h);
                 let x2 = (cx + w / 2.0).max(0.0).min(orig_w);
                 let y2 = (cy + h / 2.0).max(0.0).min(orig_h);
-
-                let label = match crate::domain::COCO_CLASSES.get(best_class_idx) {
-                    Some(l) => *l,
-                    None => "unknown",
-                };
 
                 candidates.push(Detection {
                     class_id: best_class_idx,

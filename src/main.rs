@@ -1,7 +1,7 @@
 use chrono::{FixedOffset, Utc};
 use clap::Parser;
 use monban_rs::cli::CliArgs;
-use monban_rs::domain::SentryConfig;
+use monban_rs::domain::{ConfigOverrides, SentryConfig};
 use monban_rs::error::Result;
 use monban_rs::sentry::RoomSentry;
 use tracing::Level;
@@ -93,15 +93,23 @@ fn main() -> Result<()> {
         None
     };
 
-    let config = SentryConfig::load_with_defaults(
-        Some(args.source),
-        args.model,
-        Some(args.confidence),
-        Some(args.cooldown),
-        Some(args.save_dir),
+    let targets = args.targets.map(|t| {
+        t.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    });
+
+    let config = SentryConfig::load_with_defaults(ConfigOverrides {
+        source: Some(args.source),
+        model_path: args.model,
+        confidence: Some(args.confidence),
+        cooldown: Some(args.cooldown),
+        save_dir: Some(args.save_dir),
         motion_gate,
-        Some(args.motion_threshold),
-    );
+        motion_threshold: Some(args.motion_threshold),
+        targets,
+    });
 
     let mut sentry = RoomSentry::new(config)?;
 

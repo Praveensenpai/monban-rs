@@ -44,6 +44,25 @@ pub struct Detection {
     pub box_coords: BoundingBox,
 }
 
+pub const DEFAULT_TARGET_CLASSES: [&str; 12] = [
+    "person",
+    "dog",
+    "cat",
+    "cow",
+    "bird",
+    "horse",
+    "sheep",
+    "bear",
+    "elephant",
+    "car",
+    "motorcycle",
+    "bicycle",
+];
+
+pub fn is_default_target(label: &str) -> bool {
+    DEFAULT_TARGET_CLASSES.contains(&label)
+}
+
 pub const COCO_CLASSES: [&str; 80] = [
     "person",
     "bicycle",

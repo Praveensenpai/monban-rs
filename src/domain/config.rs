@@ -12,6 +12,19 @@ pub struct SentryConfig {
     pub save_dir: PathBuf,
     pub motion_gate: bool,
     pub motion_threshold: f32,
+    pub targets: Vec<String>,
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct ConfigOverrides {
+    pub source: Option<String>,
+    pub model_path: Option<PathBuf>,
+    pub confidence: Option<f32>,
+    pub cooldown: Option<u64>,
+    pub save_dir: Option<PathBuf>,
+    pub motion_gate: Option<bool>,
+    pub motion_threshold: Option<f32>,
+    pub targets: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Default, Clone)]
@@ -33,6 +46,7 @@ pub struct SentryConfigSection {
     pub cooldown: Option<u64>,
     pub motion_gate: Option<bool>,
     pub motion_threshold: Option<f32>,
+    pub targets: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -56,15 +70,7 @@ impl SentryConfig {
         Self::config_dir().map(|dir| dir.join("config.toml"))
     }
 
-    pub fn load_with_defaults(
-        source: Option<String>,
-        model_path: Option<PathBuf>,
-        confidence: Option<f32>,
-        cooldown: Option<u64>,
-        save_dir: Option<PathBuf>,
-        motion_gate: Option<bool>,
-        motion_threshold: Option<f32>,
-    ) -> Self {
+    pub fn load_with_defaults(overrides: ConfigOverrides) -> Self {
         let file_cfg = Self::read_monban_config().unwrap_or_default();
         let (token, chat_id) = Self::discover_telegram_credentials(&file_cfg);
         let sentry_sec = file_cfg.sentry.unwrap_or_default();
@@ -76,7 +82,7 @@ impl SentryConfig {
             Path::new(&home).join(".local/share/monban/yolov8n.onnx")
         };
 
-        let resolved_model = match model_path {
+        let resolved_model = match overrides.model_path {
             Some(p) if p.exists() => p,
             Some(p) => {
                 if default_model.exists() {
@@ -88,15 +94,32 @@ impl SentryConfig {
             None => default_model,
         };
 
-        let src = source
+        let src = overrides
+            .source
             .or(sentry_sec.source)
             .unwrap_or_else(|| "http://192.168.1.36:4747/video".to_string());
-        let conf = confidence.or(sentry_sec.confidence).unwrap_or(0.25);
-        let cd = cooldown.or(sentry_sec.cooldown).unwrap_or(5);
-        let mg = motion_gate.or(sentry_sec.motion_gate).unwrap_or(true);
-        let mt = motion_threshold
+        let conf = overrides
+            .confidence
+            .or(sentry_sec.confidence)
+            .unwrap_or(0.40);
+        let cd = overrides.cooldown.or(sentry_sec.cooldown).unwrap_or(5);
+        let mg = overrides
+            .motion_gate
+            .or(sentry_sec.motion_gate)
+            .unwrap_or(true);
+        let mt = overrides
+            .motion_threshold
             .or(sentry_sec.motion_threshold)
             .unwrap_or(0.005);
+
+        let default_targets: Vec<String> = crate::domain::DEFAULT_TARGET_CLASSES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let targets = overrides
+            .targets
+            .or(sentry_sec.targets)
+            .unwrap_or(default_targets);
 
         Self {
             source: src,
@@ -105,9 +128,12 @@ impl SentryConfig {
             cooldown_seconds: cd,
             telegram_token: token,
             telegram_chat_id: chat_id,
-            save_dir: save_dir.unwrap_or_else(|| PathBuf::from("captures")),
+            save_dir: overrides
+                .save_dir
+                .unwrap_or_else(|| PathBuf::from("captures")),
             motion_gate: mg,
             motion_threshold: mt,
+            targets,
         }
     }
 

@@ -58,13 +58,14 @@
   pub type Result<T> = std::result::Result<T, MonbanError>;
   ```
 
-### `src/domain/models.rs` (Role: domain, Lines: 146)
-- **Responsibility**: Pure domain models for bounding boxes, area calculation, Intersection-over-Union (IoU), all 80 COCO classes, and emoji mapping.
+### `src/domain/models.rs` (Role: domain, Lines: 166)
+- **Responsibility**: Pure domain models for bounding boxes, area calculation, Intersection-over-Union (IoU), 80 COCO classes, emoji mapping, and target guardian class filtering.
 - **Types & Enums**:
   ```rust
   pub struct BoundingBox { pub x1: f32, pub y1: f32, pub x2: f32, pub y2: f32 }
   pub struct Detection { pub class_id: usize, pub label: String, pub confidence: f32, pub box_coords: BoundingBox }
   pub const COCO_CLASSES: [&str; 80] = [ ... ];
+  pub const DEFAULT_TARGET_CLASSES: [&str; 12] = [ "person", "dog", "cat", "cow", "bird", "horse", "sheep", "bear", "elephant", "car", "motorcycle", "bicycle" ];
   ```
 - **Public Functions & Signatures**:
   ```rust
@@ -74,9 +75,10 @@
       pub fn iou(&self, other: &Self) -> f32;
   }
   pub fn class_emoji(label: &str) -> &'static str;
+  pub fn is_default_target(label: &str) -> bool;
   ```
 
-### `src/domain/config.rs` (Role: domain, Lines: 155)
+### `src/domain/config.rs` (Role: domain, Lines: 181)
 - **Responsibility**: Runtime configuration with priority: CLI > `~/.config/monban/config.toml` > `~/.config/tayori/config.toml`.
 - **Types & Enums**:
   ```rust
@@ -90,6 +92,17 @@
       pub save_dir: PathBuf,
       pub motion_gate: bool,
       pub motion_threshold: f32,
+      pub targets: Vec<String>,
+  }
+  pub struct ConfigOverrides {
+      pub source: Option<String>,
+      pub model_path: Option<PathBuf>,
+      pub confidence: Option<f32>,
+      pub cooldown: Option<u64>,
+      pub save_dir: Option<PathBuf>,
+      pub motion_gate: Option<bool>,
+      pub motion_threshold: Option<f32>,
+      pub targets: Option<Vec<String>>,
   }
   ```
 
@@ -125,8 +138,8 @@
   }
   ```
 
-### `src/infra/detector.rs` (Role: infra, Lines: 292)
-- **Responsibility**: ONNX Runtime YOLOv8n detector with dynamic model input resolution auto-detection (supports both 416x416 and 640x640), aspect-ratio letterboxing, 80-class scanning, NMS, and Picture-in-Picture (PiP) zoom thumbnail overlay.
+### `src/infra/detector.rs` (Role: infra, Lines: 303)
+- **Responsibility**: ONNX Runtime YOLOv8n detector with dynamic model input resolution auto-detection (supports both 416x416 and 640x640), aspect-ratio letterboxing, 80-class scanning, target class whitelisting, NMS, and Picture-in-Picture (PiP) zoom thumbnail overlay.
 - **Types & Enums**:
   ```rust
   pub struct YoloDetector { ... }
@@ -136,7 +149,7 @@
   impl YoloDetector {
       pub fn new(model_path: &Path) -> Result<Self>;
       pub fn input_size(&self) -> u32;
-      pub fn detect(&mut self, image: &DynamicImage, threshold: f32) -> Result<Vec<Detection>>;
+      pub fn detect(&mut self, image: &DynamicImage, threshold: f32, targets: &[String]) -> Result<Vec<Detection>>;
       pub fn annotate_frame(image: &DynamicImage, detections: &[Detection]) -> RgbImage;
   }
   ```
@@ -156,7 +169,7 @@
   }
   ```
 
-### `src/sentry.rs` (Role: sentry, Lines: 382)
+### `src/sentry.rs` (Role: sentry, Lines: 399)
 - **Responsibility**: Core guardian loop coordinating stream frames, motion gating, multi-object detection, cooldown filtering, PiP zoom evidence, temporary mute timers, and Telegram commands/buttons.
 - **Public Functions & Signatures**:
   ```rust
@@ -192,6 +205,7 @@ monban --test
 ```
 
 ## 6. Recent Iteration Changes
+- **2026-09-26 (v0.3.2)**: Target class whitelisting & confidence calibration: added guardian class whitelist (`DEFAULT_TARGET_CLASSES`: person, animals, vehicles), eliminating false alarms from non-guardian classes (e.g. household items misclassified as airplanes); raised calibrated default confidence to 0.40 to filter out weak false positives (e.g. water dispenser bottles as persons) while maintaining crisp detection for people and pets; introduced `ConfigOverrides` and `--targets` CLI argument.
 - **2026-09-26 (v0.3.1)**: Added adaptive model input resolution detection from ONNX tensor graph (`detect_input_size`), dynamically supporting both 416x416 legacy models and 640x640 high-density models; updated bundled and system `yolov8n.onnx` to native 640x640 resolution.
 - **2026-09-26 (v0.3.0)**: Added multi-object classification across all 80 COCO classes with contextual emojis (`COCO_CLASSES`, `class_emoji`). Added Picture-in-Picture (PiP) zoom thumbnail overlay on detected targets. Added interactive Telegram inline buttons (`[📸 Snapshot]`, `[🛡️ Mute 10m]`, `[⚔️ Arm]`, `[🛑 Disarm]`) with instant toast replies and timed mute alerts (`/mute`).
 - **2026-09-26**: Upgraded YOLO input resolution to native 640×640 with aspect-ratio preserving letterboxing (2.37× pixel density increase) and tuned confidence to 0.25 for distant intruder detection across rooms; upgraded motion grid to 128×96 with 0.005 sensitivity threshold.

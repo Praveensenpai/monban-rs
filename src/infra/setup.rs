@@ -142,7 +142,7 @@ fn save_monban_config(token: &str, chat_id: &str) -> Result<()> {
         chat_id = \"{chat_id}\"\n\n\
         [sentry]\n\
         source = \"http://192.168.1.36:4747/video\"\n\
-        confidence = 0.25\n\
+        confidence = 0.40\n\
         cooldown = 5\n\
         motion_gate = true\n\
         motion_threshold = 0.005\n"
