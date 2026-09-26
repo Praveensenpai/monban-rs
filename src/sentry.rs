@@ -4,7 +4,6 @@ use crate::error::{MonbanError, Result};
 use crate::infra::{MjpegStream, MotionDetector, YoloDetector};
 use chrono::{FixedOffset, Utc};
 use image::{DynamicImage, ImageFormat};
-use std::collections::HashMap;
 use std::io::Cursor;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
@@ -123,24 +122,15 @@ impl RoomSentry {
     }
 
     fn format_detection_summary(detections: &[Detection]) -> String {
-        let mut counts: HashMap<&str, (usize, f32)> = HashMap::new();
-        for d in detections {
-            let entry = counts.entry(&d.label).or_insert((0, 0.0));
-            entry.0 += 1;
-            if d.confidence > entry.1 {
-                entry.1 = d.confidence;
-            }
-        }
-
-        let mut summary_lines = Vec::new();
-        for (label, (count, max_conf)) in counts {
-            let emoji = crate::domain::class_emoji(label);
-            summary_lines.push(format!(
-                "{emoji} <b>{label}:</b> {count} ({:.1}%)",
-                max_conf * 100.0
-            ));
-        }
-        summary_lines.join("\n")
+        let count = detections.len();
+        let max_conf = detections
+            .iter()
+            .map(|d| d.confidence)
+            .fold(0.0f32, f32::max);
+        format!(
+            "🎯 <b>Target Detected:</b> {count} ({:.1}%)",
+            max_conf * 100.0
+        )
     }
 
     fn handle_commands(&mut self, current_frame: Option<&DynamicImage>) -> Result<()> {
@@ -298,25 +288,18 @@ impl RoomSentry {
             None => Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
         };
 
-        let lines: Vec<String> = detections
-            .iter()
-            .map(|d| {
-                format!(
-                    "{} {}: {:.1}%",
-                    crate::domain::class_emoji(&d.label),
-                    d.label,
-                    d.confidence * 100.0
-                )
-            })
-            .collect();
-        let detected_summary = if lines.is_empty() {
+        let detected_summary = if detections.is_empty() {
             "None (All Clear)".to_string()
         } else {
-            lines.join(", ")
+            let max_conf = detections
+                .iter()
+                .map(|d| d.confidence)
+                .fold(0.0f32, f32::max);
+            format!("Target Detected ({:.1}%)", max_conf * 100.0)
         };
 
         let caption = format!(
-            "📸 <b>Manual Snapshot Requested</b>\n\n🕒 <b>Time:</b> {now_str}\n🎯 <b>Objects Visible:</b> {detected_summary}"
+            "📸 <b>Manual Snapshot Requested</b>\n\n🕒 <b>Time:</b> {now_str}\n🎯 <b>Status:</b> {detected_summary}"
         );
 
         self.telegram.send_photo_alert(jpeg_bytes, &caption)?;

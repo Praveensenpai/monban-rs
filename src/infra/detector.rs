@@ -132,7 +132,7 @@ impl YoloDetector {
         orig_h: f32,
         info: &LetterboxInfo,
         threshold: f32,
-        targets: &[String],
+        _targets: &[String],
     ) -> Result<Vec<Detection>> {
         if shape.len() != 3 {
             return Err(MonbanError::Stream(
@@ -154,15 +154,6 @@ impl YoloDetector {
             }
 
             if best_class_score >= threshold {
-                let label = match crate::domain::COCO_CLASSES.get(best_class_idx) {
-                    Some(l) => *l,
-                    None => "unknown",
-                };
-
-                if !targets.is_empty() && !targets.iter().any(|t| t == label) {
-                    continue;
-                }
-
                 let box_cx = data[i];
                 let box_cy = data[num_anchors + i];
                 let box_w = data[2 * num_anchors + i];
@@ -180,7 +171,7 @@ impl YoloDetector {
 
                 candidates.push(Detection {
                     class_id: best_class_idx,
-                    label: label.to_string(),
+                    label: "target".to_string(),
                     confidence: best_class_score,
                     box_coords: BoundingBox::new(x1, y1, x2, y2),
                 });

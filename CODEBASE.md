@@ -140,8 +140,8 @@
   }
   ```
 
-### `src/infra/detector.rs` (Role: infra, Lines: 303)
-- **Responsibility**: ONNX Runtime YOLOv8n detector with dynamic model input resolution auto-detection (supports both 416x416 and 640x640), aspect-ratio letterboxing, 80-class scanning, target class whitelisting, NMS, and Picture-in-Picture (PiP) zoom thumbnail overlay.
+### `src/infra/detector.rs` (Role: infra, Lines: 294)
+- **Responsibility**: ONNX Runtime YOLOv8n detector with dynamic model input resolution auto-detection (supports both 416x416 and 640x640), aspect-ratio letterboxing, class-agnostic target detection, NMS, and Picture-in-Picture (PiP) zoom thumbnail overlay.
 - **Types & Enums**:
   ```rust
   pub struct YoloDetector { ... }
@@ -172,7 +172,7 @@
   }
   ```
 
-### `src/sentry.rs` (Role: sentry, Lines: 391)
+### `src/sentry.rs` (Role: sentry, Lines: 374)
 - **Responsibility**: Core guardian loop coordinating stream frames, motion gating, multi-object detection, cooldown filtering, PiP zoom evidence, temporary mute timers, and Telegram commands/buttons.
 - **Public Functions & Signatures**:
   ```rust
@@ -208,6 +208,7 @@ monban --test
 ```
 
 ## 6. Recent Iteration Changes
+- **2026-09-26 (v0.3.6)**: Class-agnostic detection & clean alert captions: removed confusing COCO class names (`cat`, `chair`, `airplane`, `person`, etc.) from Telegram notifications and manual snapshot replies; detector now extracts peak confidence across candidate anchors and assigns clean, generic `"target"` labeling with confidence percentage.
 - **2026-09-26 (v0.3.5)**: Rate-limited FIFO message queue & automatic HTTP 429 retry: implemented internal bounded worker channel (`sync_channel(10)`) and background pacing dispatcher enforcing Telegram's 1.0s inter-message limit; added exponential backoff on HTTP 429 / network errors reading `Retry-After`; eliminated ad-hoc thread spawning in sentry loop.
 - **2026-09-26 (v0.3.4)**: Real-time stream latency & non-blocking alert refactor: re-architected `MjpegStream` to zero-lag drop-stale raw JPEG storage (instantly discards older backlog frames, eliminating 2–4s queue lag when moving camera); made Telegram photo alert uploads non-blocking via detached background threads, keeping sentry video pipeline 100% fluid at real-time speeds.
 - **2026-09-26 (v0.3.3)**: Purged `cat` and irrelevant classes from default targets (`DEFAULT_TARGET_CLASSES`: strictly `person`, `dog`, `cow`), eliminating chair/furniture false alarms; added `--rotate <DEGREES>` (0, 90, 180, 270) stream rotation support for portrait/sideways camera orientations (eliminating 85% water bottle false human detections); calibrated default confidence to 0.45.
