@@ -32,11 +32,18 @@ impl SentryConfig {
         save_dir: Option<PathBuf>,
     ) -> Self {
         let (token, chat_id) = Self::discover_telegram_credentials();
+        let default_model = if Path::new("yolov8n.onnx").exists() {
+            PathBuf::from("yolov8n.onnx")
+        } else {
+            let home = std::env::var("HOME").unwrap_or_default();
+            Path::new(&home).join(".local/share/monban/yolov8n.onnx")
+        };
+
         Self {
             source: source.unwrap_or_else(|| "http://192.168.1.36:4747/video".to_string()),
-            model_path: model_path.unwrap_or_else(|| PathBuf::from("yolov8n.onnx")),
+            model_path: model_path.unwrap_or(default_model),
             confidence_threshold: confidence.unwrap_or(0.35),
-            cooldown_seconds: cooldown.unwrap_or(30),
+            cooldown_seconds: cooldown.unwrap_or(5),
             telegram_token: token,
             telegram_chat_id: chat_id,
             save_dir: save_dir.unwrap_or_else(|| PathBuf::from("captures")),

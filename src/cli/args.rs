@@ -33,7 +33,7 @@ pub struct CliArgs {
     )]
     pub confidence: f32,
 
-    #[arg(long, default_value_t = 30, help = "Seconds between Telegram alerts")]
+    #[arg(long, default_value_t = 5, help = "Seconds between Telegram alerts")]
     pub cooldown: u64,
 
     #[arg(

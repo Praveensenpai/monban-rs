@@ -91,7 +91,9 @@ impl MjpegStream {
                 break;
             }
 
-            let Some(offset) = buffer[start + 2..].windows(2).position(|w| w == [0xFF, 0xD9])
+            let Some(offset) = buffer[start + 2..]
+                .windows(2)
+                .position(|w| w == [0xFF, 0xD9])
             else {
                 if start > 0 {
                     buffer.drain(..start);

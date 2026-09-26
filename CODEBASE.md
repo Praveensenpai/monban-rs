@@ -168,4 +168,5 @@ cargo test --all-targets
 ```
 
 ## 6. Recent Iteration Changes
+- **2026-09-26**: Reduced default alert cooldown from 30s to 5s across CLI and domain config.
 - **2026-09-26**: Complete Rust port of Monban AI room sentry. 11MB standalone binary, 69MB RAM footprint (91.5% reduction), 42ms inference latency.

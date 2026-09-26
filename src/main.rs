@@ -20,7 +20,14 @@ fn ensure_onnx_dylib() {
     if std::env::var("ORT_DYLIB_PATH").is_ok() {
         return;
     }
-    for candidate in &["libonnxruntime.so", "target/release/libonnxruntime.so"] {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let user_local_lib = format!("{home}/.local/lib/libonnxruntime.so");
+    for candidate in &[
+        "libonnxruntime.so",
+        "target/release/libonnxruntime.so",
+        &user_local_lib,
+        "/usr/local/lib/libonnxruntime.so",
+    ] {
         let p = std::path::Path::new(candidate);
         if p.exists() {
             // Safe: called at the start of main before any threads are spawned

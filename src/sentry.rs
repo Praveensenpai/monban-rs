@@ -2,7 +2,7 @@ use crate::api::TelegramClient;
 use crate::domain::{Detection, SentryConfig};
 use crate::error::{MonbanError, Result};
 use crate::infra::{MjpegStream, YoloDetector};
-use chrono::Utc;
+use chrono::{FixedOffset, Utc};
 use image::{DynamicImage, ImageFormat};
 use std::io::Cursor;
 use std::time::{Duration, Instant};
@@ -59,7 +59,11 @@ impl RoomSentry {
         }
 
         let annotated = YoloDetector::annotate_frame(image, detections);
-        let now = Utc::now();
+        let ist_offset = match FixedOffset::east_opt(5 * 3600 + 1800) {
+            Some(offset) => offset,
+            None => return Err(MonbanError::Config("Invalid IST offset".to_string())),
+        };
+        let now = Utc::now().with_timezone(&ist_offset);
         let filename = format!("sentry_{}.jpg", now.format("%Y%m%d_%H%M%S"));
         let save_path = self.config.save_dir.join(&filename);
 
@@ -81,7 +85,7 @@ impl RoomSentry {
             📁 <b>Evidence:</b> <code>{}</code>",
             detections.len(),
             max_conf * 100.0,
-            now.format("%Y-%m-%d %H:%M:%S UTC"),
+            now.format("%Y-%m-%d %H:%M:%S IST"),
             filename
         );
 
