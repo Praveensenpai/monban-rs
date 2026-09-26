@@ -6,6 +6,7 @@ use chrono::{FixedOffset, Utc};
 use image::{DynamicImage, ImageFormat};
 use std::collections::HashMap;
 use std::io::Cursor;
+use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
@@ -113,8 +114,13 @@ impl RoomSentry {
             now.format("%Y-%m-%d %H:%M:%S IST")
         );
 
-        let _ = self.telegram.send_photo_alert(jpeg_bytes, &caption);
         self.last_alert = Some(Instant::now());
+        let tg = self.telegram.clone();
+        thread::spawn(move || {
+            if let Err(e) = tg.send_photo_alert(jpeg_bytes, &caption) {
+                warn!("Failed to dispatch Telegram photo alert: {e}");
+            }
+        });
         warn!(
             "🚨 Alert triggered: {} target(s) detected!",
             detections.len()
@@ -226,20 +232,21 @@ impl RoomSentry {
     }
 
     fn send_status_reply(&self) -> Result<()> {
-        let uptime_secs = self.start_time.elapsed().as_secs();
+        let uptime = self.start_time.elapsed().as_secs();
         let uptime_str = format!(
             "{}h {}m {}s",
-            uptime_secs / 3600,
-            (uptime_secs % 3600) / 60,
-            uptime_secs % 60
+            uptime / 3600,
+            (uptime % 3600) / 60,
+            uptime % 60
         );
 
         let arm_str = if !self.is_alert_enabled() {
-            if let Some(until) = self.mute_until {
-                let remaining = until.saturating_duration_since(Instant::now()).as_secs();
-                format!("🛡️ <b>MUTED</b> ({}s remaining)", remaining)
-            } else {
-                "🛑 <b>DISARMED</b>".to_string()
+            match self.mute_until {
+                Some(until) => format!(
+                    "🛡️ <b>MUTED</b> ({}s remaining)",
+                    until.saturating_duration_since(Instant::now()).as_secs()
+                ),
+                None => "🛑 <b>DISARMED</b>".to_string(),
             }
         } else {
             "⚔️ <b>ARMED</b>".to_string()
@@ -250,14 +257,10 @@ impl RoomSentry {
         } else {
             "Disabled"
         };
-
-        let last_alert_str = match self.last_alert {
-            Some(t) => {
-                let ago = t.elapsed().as_secs();
-                format!("{ago}s ago")
-            }
-            None => "None".to_string(),
-        };
+        let last_alert_str = self
+            .last_alert
+            .map(|t| format!("{}s ago", t.elapsed().as_secs()))
+            .unwrap_or_else(|| "None".to_string());
 
         let msg = format!(
             "🥋 <b>MONBAN SENTRY STATUS</b>\n\n\

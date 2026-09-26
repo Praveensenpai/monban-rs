@@ -54,6 +54,7 @@ struct UserItem {
     id: i64,
 }
 
+#[derive(Clone)]
 pub struct TelegramClient {
     token: Option<String>,
     chat_id: Option<String>,
