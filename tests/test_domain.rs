@@ -47,3 +47,21 @@ fn test_ist_timestamp_offset() {
     let formatted = now.format("%Y-%m-%d %H:%M:%S IST").to_string();
     assert!(formatted.ends_with("IST"));
 }
+
+#[test]
+fn test_coco_classes_and_emojis() {
+    use monban_rs::domain::{COCO_CLASSES, class_emoji};
+
+    assert_eq!(COCO_CLASSES.len(), 80);
+    assert_eq!(COCO_CLASSES[0], "person");
+    assert_eq!(COCO_CLASSES[15], "cat");
+    assert_eq!(COCO_CLASSES[16], "dog");
+    assert_eq!(COCO_CLASSES[19], "cow");
+
+    assert_eq!(class_emoji("person"), "👤");
+    assert_eq!(class_emoji("dog"), "🐕");
+    assert_eq!(class_emoji("cat"), "🐈");
+    assert_eq!(class_emoji("cow"), "🐄");
+    assert_eq!(class_emoji("laptop"), "💻");
+    assert_eq!(class_emoji("alien_creature"), "🎯");
+}

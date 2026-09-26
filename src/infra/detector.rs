@@ -8,7 +8,6 @@ use ort::value::Tensor;
 use std::path::Path;
 
 const MODEL_INPUT_SIZE: u32 = 640;
-const PERSON_CLASS_INDEX: usize = 0;
 const NMS_IOU_THRESHOLD: f32 = 0.45;
 
 #[derive(Clone, Copy)]
@@ -117,8 +116,17 @@ impl YoloDetector {
         let num_anchors = shape[2] as usize;
         let mut candidates = Vec::new();
         for i in 0..num_anchors {
-            let person_score = data[4 * num_anchors + i];
-            if person_score >= threshold {
+            let mut best_class_idx = 0;
+            let mut best_class_score = 0.0f32;
+            for c in 0..80 {
+                let score = data[(4 + c) * num_anchors + i];
+                if score > best_class_score {
+                    best_class_score = score;
+                    best_class_idx = c;
+                }
+            }
+
+            if best_class_score >= threshold {
                 let box_cx = data[i];
                 let box_cy = data[num_anchors + i];
                 let box_w = data[2 * num_anchors + i];
@@ -134,10 +142,15 @@ impl YoloDetector {
                 let x2 = (cx + w / 2.0).max(0.0).min(orig_w);
                 let y2 = (cy + h / 2.0).max(0.0).min(orig_h);
 
+                let label = match crate::domain::COCO_CLASSES.get(best_class_idx) {
+                    Some(l) => *l,
+                    None => "unknown",
+                };
+
                 candidates.push(Detection {
-                    class_id: PERSON_CLASS_INDEX,
-                    label: "person".to_string(),
-                    confidence: person_score,
+                    class_id: best_class_idx,
+                    label: label.to_string(),
+                    confidence: best_class_score,
                     box_coords: BoundingBox::new(x1, y1, x2, y2),
                 });
             }
@@ -196,6 +209,64 @@ impl YoloDetector {
                 }
             }
         }
+
+        if let Some(primary) = detections.first() {
+            Self::overlay_zoom_crop(&mut rgb, image, primary);
+        }
+
         rgb
+    }
+
+    fn overlay_zoom_crop(rgb: &mut RgbImage, original: &DynamicImage, primary: &Detection) {
+        let (width, height) = rgb.dimensions();
+        let box_w = (primary.box_coords.x2 - primary.box_coords.x1).max(10.0);
+        let box_h = (primary.box_coords.y2 - primary.box_coords.y1).max(10.0);
+
+        let margin_x = box_w * 0.15;
+        let margin_y = box_h * 0.15;
+
+        let crop_x = (primary.box_coords.x1 - margin_x).max(0.0) as u32;
+        let crop_y = (primary.box_coords.y1 - margin_y).max(0.0) as u32;
+        let crop_w = ((box_w + margin_x * 2.0) as u32).min(width.saturating_sub(crop_x));
+        let crop_h = ((box_h + margin_y * 2.0) as u32).min(height.saturating_sub(crop_y));
+
+        if crop_w < 10 || crop_h < 10 {
+            return;
+        }
+
+        let pip_size = 200u32;
+        if width <= pip_size + 40 || height <= pip_size + 40 {
+            return;
+        }
+
+        let cropped = original.crop_imm(crop_x, crop_y, crop_w, crop_h);
+        let thumb = cropped
+            .resize_exact(pip_size, pip_size, image::imageops::FilterType::Triangle)
+            .to_rgb8();
+
+        let pip_x = width - pip_size - 15;
+        let pip_y: u32 = 15;
+
+        let white = Rgb([255, 255, 255]);
+        let red = Rgb([255, 0, 0]);
+
+        for x in (pip_x.saturating_sub(2))..=(pip_x + pip_size + 1) {
+            for y in (pip_y.saturating_sub(2))..=(pip_y + pip_size + 1) {
+                if (x < pip_x || x >= pip_x + pip_size || y < pip_y || y >= pip_y + pip_size)
+                    && x < width
+                    && y < height
+                {
+                    rgb.put_pixel(x, y, if (x + y) % 4 < 2 { red } else { white });
+                }
+            }
+        }
+
+        for (tx, ty, pixel) in thumb.enumerate_pixels() {
+            let px = pip_x + tx;
+            let py = pip_y + ty;
+            if px < width && py < height {
+                rgb.put_pixel(px, py, *pixel);
+            }
+        }
     }
 }

@@ -4,6 +4,7 @@ use crate::error::{MonbanError, Result};
 use crate::infra::{MjpegStream, MotionDetector, YoloDetector};
 use chrono::{FixedOffset, Utc};
 use image::{DynamicImage, ImageFormat};
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
@@ -17,6 +18,7 @@ pub struct RoomSentry {
     last_person_seen: Option<Instant>,
     last_command_poll: Instant,
     armed: bool,
+    mute_until: Option<Instant>,
     start_time: Instant,
 }
 
@@ -42,6 +44,7 @@ impl RoomSentry {
             last_person_seen: None,
             last_command_poll: Instant::now(),
             armed: true,
+            mute_until: None,
             start_time: Instant::now(),
         })
     }
@@ -69,14 +72,25 @@ impl RoomSentry {
 
         if !detections.is_empty() {
             self.last_person_seen = Some(Instant::now());
-            if self.armed {
+            if self.is_alert_enabled() {
                 self.handle_alert(image, &detections)?;
             } else {
-                debug!("Sentry disarmed: intruder detected but alert suppressed.");
+                debug!("Sentry muted or disarmed: alert suppressed.");
             }
         }
 
         Ok(detections)
+    }
+
+    fn is_alert_enabled(&self) -> bool {
+        if !self.armed {
+            return false;
+        }
+        if let Some(until) = self.mute_until {
+            Instant::now() >= until
+        } else {
+            true
+        }
     }
 
     fn is_in_cooldown(&self) -> bool {
@@ -106,19 +120,13 @@ impl RoomSentry {
         let mut jpeg_bytes = Vec::new();
         annotated.write_to(&mut Cursor::new(&mut jpeg_bytes), ImageFormat::Jpeg)?;
 
-        let max_conf = detections
-            .iter()
-            .map(|d| d.confidence)
-            .fold(0.0f32, f32::max);
-
+        let summary_str = Self::format_detection_summary(detections);
         let caption = format!(
-            "🚨 <b>MONBAN-RS ALERT — Room Sentry</b>\n\n\
-            👤 <b>Intruders Detected:</b> {}\n\
-            🎯 <b>Peak Confidence:</b> {:.1}%\n\
+            "🚨 <b>MONBAN ALERT — Motion Detected</b>\n\n\
+            {}\n\n\
             🕒 <b>Time:</b> {}\n\
             📁 <b>Evidence:</b> <code>{}</code>",
-            detections.len(),
-            max_conf * 100.0,
+            summary_str,
             now.format("%Y-%m-%d %H:%M:%S IST"),
             filename
         );
@@ -126,10 +134,31 @@ impl RoomSentry {
         let _ = self.telegram.send_photo_alert(jpeg_bytes, &caption);
         self.last_alert = Some(Instant::now());
         warn!(
-            "🚨 Alert triggered: {} intruder(s) detected!",
+            "🚨 Alert triggered: {} target(s) detected!",
             detections.len()
         );
         Ok(())
+    }
+
+    fn format_detection_summary(detections: &[Detection]) -> String {
+        let mut counts: HashMap<&str, (usize, f32)> = HashMap::new();
+        for d in detections {
+            let entry = counts.entry(&d.label).or_insert((0, 0.0));
+            entry.0 += 1;
+            if d.confidence > entry.1 {
+                entry.1 = d.confidence;
+            }
+        }
+
+        let mut summary_lines = Vec::new();
+        for (label, (count, max_conf)) in counts {
+            let emoji = crate::domain::class_emoji(label);
+            summary_lines.push(format!(
+                "{emoji} <b>{label}:</b> {count} ({:.1}%)",
+                max_conf * 100.0
+            ));
+        }
+        summary_lines.join("\n")
     }
 
     fn handle_commands(&mut self, current_frame: Option<&DynamicImage>) -> Result<()> {
@@ -140,42 +169,77 @@ impl RoomSentry {
 
         let commands = self.telegram.poll_commands()?;
         for cmd in commands {
-            match cmd {
-                BotCommand::Status => self.send_status_reply()?,
-                BotCommand::Arm => {
-                    self.armed = true;
-                    self.telegram.send_message(
-                        "⚔️ <b>SENTRY ARMED</b>\nIntruder detection alerts are now ACTIVE.",
-                    )?;
-                    info!("Sentry ARMED via Telegram command.");
-                }
-                BotCommand::Disarm => {
-                    self.armed = false;
-                    self.telegram.send_message(
-                        "🛡️ <b>SENTRY DISARMED</b>\nIntruder alerts MUTED until re-armed.",
-                    )?;
-                    info!("Sentry DISARMED via Telegram command.");
-                }
-                BotCommand::Snap => {
-                    if let Some(frame) = current_frame {
-                        self.send_snapshot_reply(frame)?;
-                    } else {
-                        self.telegram
-                            .send_message("⚠️ Camera frame not yet available for snapshot.")?;
-                    }
-                }
-                BotCommand::Help => {
-                    self.telegram.send_message(
-                        "🥋 <b>門番 (Monban) Guardian Commands</b>\n\n\
-                        • <code>/status</code> — Current sentry health & statistics\n\
-                        • <code>/snap</code> — Real-time camera snapshot\n\
-                        • <code>/arm</code> — Enable intruder alerts\n\
-                        • <code>/disarm</code> — Mute intruder alerts\n\
-                        • <code>/help</code> — Show this commands menu",
-                    )?;
-                }
-            }
+            self.execute_command(cmd, current_frame)?;
         }
+        Ok(())
+    }
+
+    fn execute_command(
+        &mut self,
+        cmd: BotCommand,
+        current_frame: Option<&DynamicImage>,
+    ) -> Result<()> {
+        match cmd {
+            BotCommand::Status => self.send_status_reply()?,
+            BotCommand::Arm => {
+                self.armed = true;
+                self.mute_until = None;
+                self.telegram.send_message(
+                    "⚔️ <b>SENTRY ARMED</b>\nIntruder detection alerts are now ACTIVE.",
+                )?;
+                info!("Sentry ARMED via Telegram command.");
+            }
+            BotCommand::Disarm => {
+                self.armed = false;
+                self.mute_until = None;
+                self.telegram.send_message(
+                    "🛑 <b>SENTRY DISARMED</b>\nIntruder alerts MUTED until re-armed.",
+                )?;
+                info!("Sentry DISARMED via Telegram command.");
+            }
+            BotCommand::Mute(mins) => self.mute_alerts(mins)?,
+            BotCommand::Snap => match current_frame {
+                Some(frame) => self.send_snapshot_reply(frame)?,
+                None => {
+                    self.telegram
+                        .send_message("⚠️ Camera frame not yet available for snapshot.")?;
+                }
+            },
+            BotCommand::Help => self.send_help_reply()?,
+        }
+        Ok(())
+    }
+
+    fn mute_alerts(&mut self, mins: u64) -> Result<()> {
+        let duration = Duration::from_secs(mins * 60);
+        self.mute_until = Some(Instant::now() + duration);
+        let unmute_time_str = match FixedOffset::east_opt(19800) {
+            Some(tz) => (Utc::now() + chrono::Duration::minutes(mins as i64))
+                .with_timezone(&tz)
+                .format("%H:%M:%S IST")
+                .to_string(),
+            None => (Utc::now() + chrono::Duration::minutes(mins as i64))
+                .format("%H:%M:%S UTC")
+                .to_string(),
+        };
+        self.telegram.send_message(&format!(
+            "🛡️ <b>SENTRY MUTED FOR {}m</b>\nAlerts will automatically resume at {}.",
+            mins, unmute_time_str
+        ))?;
+        info!("Sentry MUTED for {mins} minutes via Telegram command.");
+        Ok(())
+    }
+
+    fn send_help_reply(&self) -> Result<()> {
+        self.telegram.send_message(
+            "🥋 <b>門番 (Monban) Guardian Commands</b>\n\n\
+            • <code>/status</code> — Current sentry health & statistics\n\
+            • <code>/snap</code> — Real-time camera snapshot\n\
+            • <code>/mute</code> — Mute alerts for 10 minutes\n\
+            • <code>/arm</code> — Enable intruder alerts\n\
+            • <code>/disarm</code> — Mute intruder alerts\n\
+            • <code>/help</code> — Show this commands menu",
+        )?;
         Ok(())
     }
 
@@ -187,13 +251,20 @@ impl RoomSentry {
             (uptime_secs % 3600) / 60,
             uptime_secs % 60
         );
-        let arm_str = if self.armed {
-            "⚔️ <b>ARMED</b>"
+
+        let arm_str = if !self.is_alert_enabled() {
+            if let Some(until) = self.mute_until {
+                let remaining = until.saturating_duration_since(Instant::now()).as_secs();
+                format!("🛡️ <b>MUTED</b> ({}s remaining)", remaining)
+            } else {
+                "🛑 <b>DISARMED</b>".to_string()
+            }
         } else {
-            "🛡️ <b>DISARMED</b>"
+            "⚔️ <b>ARMED</b>".to_string()
         };
+
         let mg_str = if self.config.motion_gate {
-            "Active (gated)"
+            "Active (128x96)"
         } else {
             "Disabled"
         };
@@ -245,12 +316,22 @@ impl RoomSentry {
             None => Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
         };
 
+        let mut lines = Vec::new();
+        for d in &detections {
+            let emoji = crate::domain::class_emoji(&d.label);
+            lines.push(format!("{emoji} {}: {:.1}%", d.label, d.confidence * 100.0));
+        }
+        let detected_summary = if lines.is_empty() {
+            "None (All Clear)".to_string()
+        } else {
+            lines.join(", ")
+        };
+
         let caption = format!(
             "📸 <b>Manual Snapshot Requested</b>\n\n\
             🕒 <b>Time:</b> {}\n\
-            👤 <b>People Visible:</b> {}",
-            now_str,
-            detections.len()
+            🎯 <b>Objects Visible:</b> {}",
+            now_str, detected_summary
         );
 
         self.telegram.send_photo_alert(jpeg_bytes, &caption)?;
@@ -281,7 +362,7 @@ impl RoomSentry {
 
         let detections = self.process_frame(&frame)?;
         info!(
-            "Test frame processed. Found {} person(s).",
+            "Test frame processed. Found {} target(s).",
             detections.len()
         );
         Ok(())
@@ -302,7 +383,6 @@ impl RoomSentry {
                     }
                 }
                 Err(MonbanError::Stream(_)) => {
-                    // Frame not ready, still check for bot commands
                     if let Err(e) = self.handle_commands(None) {
                         warn!("Error handling bot commands: {e}");
                     }

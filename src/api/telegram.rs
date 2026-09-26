@@ -10,8 +10,13 @@ pub enum BotCommand {
     Status,
     Arm,
     Disarm,
+    Mute(u64),
     Snap,
     Help,
+}
+
+fn guardian_inline_markup() -> &'static str {
+    r#"{"inline_keyboard":[[{"text":"📸 Snapshot","callback_data":"snap"},{"text":"🛡️ Mute 10m","callback_data":"mute_10"}],[{"text":"⚔️ Arm","callback_data":"arm"},{"text":"🛑 Disarm","callback_data":"disarm"}]]}"#
 }
 
 #[derive(Deserialize)]
@@ -23,6 +28,7 @@ struct UpdateResponse {
 struct UpdateItem {
     update_id: i64,
     message: Option<MessageItem>,
+    callback_query: Option<CallbackQueryItem>,
 }
 
 #[derive(Deserialize)]
@@ -33,6 +39,18 @@ struct MessageItem {
 
 #[derive(Deserialize)]
 struct ChatItem {
+    id: i64,
+}
+
+#[derive(Deserialize)]
+struct CallbackQueryItem {
+    id: String,
+    from: UserItem,
+    data: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct UserItem {
     id: i64,
 }
 
@@ -71,7 +89,8 @@ impl TelegramClient {
         let form = Form::new()
             .text("chat_id", chat_id.clone())
             .text("text", text.to_string())
-            .text("parse_mode", "HTML");
+            .text("parse_mode", "HTML")
+            .text("reply_markup", guardian_inline_markup());
 
         let response = self.client.post(&url).multipart(form).send()?;
         Ok(response.status().is_success())
@@ -93,6 +112,7 @@ impl TelegramClient {
             .text("chat_id", chat_id.clone())
             .text("caption", caption.to_string())
             .text("parse_mode", "HTML")
+            .text("reply_markup", guardian_inline_markup())
             .part("photo", part);
 
         let response = self.client.post(&url).multipart(form).send()?;
@@ -107,6 +127,18 @@ impl TelegramClient {
             );
             Ok(false)
         }
+    }
+
+    pub fn answer_callback(&self, query_id: &str, toast: &str) -> Result<()> {
+        let Some(token) = &self.token else {
+            return Ok(());
+        };
+        let url = format!("https://api.telegram.org/bot{token}/answerCallbackQuery");
+        let form = Form::new()
+            .text("callback_query_id", query_id.to_string())
+            .text("text", toast.to_string());
+        let _ = self.client.post(&url).multipart(form).send();
+        Ok(())
     }
 
     pub fn poll_commands(&mut self) -> Result<Vec<BotCommand>> {
@@ -145,29 +177,60 @@ impl TelegramClient {
             for item in updates {
                 self.last_update_id = Some(item.update_id + 1);
 
-                let Some(msg) = item.message else { continue };
-                if msg.chat.id.to_string() != *chat_id {
+                if let Some(cq) = item.callback_query {
+                    if cq.from.id.to_string() == *chat_id {
+                        commands.extend(self.handle_callback_query(&cq));
+                    }
                     continue;
                 }
 
-                let Some(text) = msg.text else { continue };
-                let cmd_str = match text.split_whitespace().next() {
-                    Some(s) => s.to_lowercase(),
-                    None => continue,
-                };
-
-                let clean_cmd = cmd_str.split('@').next().unwrap_or(cmd_str.as_str());
-                match clean_cmd {
-                    "/status" => commands.push(BotCommand::Status),
-                    "/arm" => commands.push(BotCommand::Arm),
-                    "/disarm" => commands.push(BotCommand::Disarm),
-                    "/snap" => commands.push(BotCommand::Snap),
-                    "/help" | "/start" => commands.push(BotCommand::Help),
-                    _ => {}
+                if let Some(msg) = item.message
+                    && msg.chat.id.to_string() == *chat_id
+                {
+                    commands.extend(Self::parse_text_command(msg.text.as_deref()));
                 }
             }
         }
 
         Ok(commands)
+    }
+
+    fn handle_callback_query(&self, cq: &CallbackQueryItem) -> Option<BotCommand> {
+        let data = cq.data.as_deref()?;
+        match data {
+            "snap" => {
+                let _ = self.answer_callback(&cq.id, "📸 Capturing snapshot...");
+                Some(BotCommand::Snap)
+            }
+            "mute_10" => {
+                let _ = self.answer_callback(&cq.id, "🛡️ Muted for 10 minutes");
+                Some(BotCommand::Mute(10))
+            }
+            "arm" => {
+                let _ = self.answer_callback(&cq.id, "⚔️ Sentry Armed");
+                Some(BotCommand::Arm)
+            }
+            "disarm" => {
+                let _ = self.answer_callback(&cq.id, "🛑 Sentry Disarmed");
+                Some(BotCommand::Disarm)
+            }
+            _ => None,
+        }
+    }
+
+    fn parse_text_command(text: Option<&str>) -> Option<BotCommand> {
+        let text = text?;
+        let cmd_str = text.split_whitespace().next()?.to_lowercase();
+        let clean_cmd = cmd_str.split('@').next().unwrap_or(cmd_str.as_str());
+
+        match clean_cmd {
+            "/status" => Some(BotCommand::Status),
+            "/arm" => Some(BotCommand::Arm),
+            "/disarm" => Some(BotCommand::Disarm),
+            "/mute" => Some(BotCommand::Mute(10)),
+            "/snap" => Some(BotCommand::Snap),
+            "/help" | "/start" => Some(BotCommand::Help),
+            _ => None,
+        }
     }
 }

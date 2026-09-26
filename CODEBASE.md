@@ -58,12 +58,13 @@
   pub type Result<T> = std::result::Result<T, MonbanError>;
   ```
 
-### `src/domain/models.rs` (Role: domain, Lines: 45)
-- **Responsibility**: Pure domain models for bounding boxes, area calculation, and Intersection-over-Union (IoU).
+### `src/domain/models.rs` (Role: domain, Lines: 146)
+- **Responsibility**: Pure domain models for bounding boxes, area calculation, Intersection-over-Union (IoU), all 80 COCO classes, and emoji mapping.
 - **Types & Enums**:
   ```rust
   pub struct BoundingBox { pub x1: f32, pub y1: f32, pub x2: f32, pub y2: f32 }
   pub struct Detection { pub class_id: usize, pub label: String, pub confidence: f32, pub box_coords: BoundingBox }
+  pub const COCO_CLASSES: [&str; 80] = [ ... ];
   ```
 - **Public Functions & Signatures**:
   ```rust
@@ -72,9 +73,10 @@
       pub fn area(&self) -> f32;
       pub fn iou(&self, other: &Self) -> f32;
   }
+  pub fn class_emoji(label: &str) -> &'static str;
   ```
 
-### `src/domain/config.rs` (Role: domain, Lines: 145)
+### `src/domain/config.rs` (Role: domain, Lines: 155)
 - **Responsibility**: Runtime configuration with priority: CLI > `~/.config/monban/config.toml` > `~/.config/tayori/config.toml`.
 - **Types & Enums**:
   ```rust
@@ -91,8 +93,8 @@
   }
   ```
 
-### `src/infra/motion.rs` (Role: infra, Lines: 55)
-- **Responsibility**: Ultra-fast grayscale pixel-difference motion detector gating YOLO inference (sub-0.1ms).
+### `src/infra/motion.rs` (Role: infra, Lines: 59)
+- **Responsibility**: Ultra-fast grayscale pixel-difference motion detector gating YOLO inference (128x96 grid, sub-0.1ms).
 - **Public Functions & Signatures**:
   ```rust
   impl MotionDetector {
@@ -102,14 +104,14 @@
   }
   ```
 
-### `src/infra/setup.rs` (Role: infra, Lines: 140)
+### `src/infra/setup.rs` (Role: infra, Lines: 154)
 - **Responsibility**: Interactive terminal setup wizard configuring and validating dedicated Telegram bot.
 - **Public Functions & Signatures**:
   ```rust
   pub fn run_interactive_setup() -> Result<()>;
   ```
 
-### `src/infra/mjpeg.rs` (Role: infra, Lines: 129)
+### `src/infra/mjpeg.rs` (Role: infra, Lines: 131)
 - **Responsibility**: Background worker thread that streams multipart JPEG HTTP chunked responses with zero buffer queue lag.
 - **Types & Enums**:
   ```rust
@@ -123,8 +125,8 @@
   }
   ```
 
-### `src/infra/detector.rs` (Role: infra, Lines: 164)
-- **Responsibility**: ONNX Runtime YOLOv8n detector with letterboxing/resizing to 416x416, tensor inference, and NMS.
+### `src/infra/detector.rs` (Role: infra, Lines: 273)
+- **Responsibility**: ONNX Runtime YOLOv8n detector with letterboxing to native 640x640, 80-class scanning, NMS, and Picture-in-Picture (PiP) zoom thumbnail overlay.
 - **Types & Enums**:
   ```rust
   pub struct YoloDetector { ... }
@@ -138,22 +140,23 @@
   }
   ```
 
-### `src/api/telegram.rs` (Role: api, Lines: 165)
-- **Responsibility**: Two-way Telegram bot integration (command polling `/status`, `/snap`, `/arm`, `/disarm`, `/help` and multipart photo alert dispatcher).
+### `src/api/telegram.rs` (Role: api, Lines: 236)
+- **Responsibility**: Two-way Telegram bot integration with interactive inline button keyboards (`[📸 Snapshot]`, `[🛡️ Mute 10m]`, `[⚔️ Arm]`, `[🛑 Disarm]`), toast callback queries, command polling (`/status`, `/snap`, `/mute`, `/arm`, `/disarm`, `/help`), and multipart photo alerts.
 - **Public Functions & Signatures**:
   ```rust
-  pub enum BotCommand { Status, Arm, Disarm, Snap, Help }
+  pub enum BotCommand { Status, Arm, Disarm, Mute(u64), Snap, Help }
   impl TelegramClient {
       pub fn new(token: Option<String>, chat_id: Option<String>) -> Self;
       pub fn is_configured(&self) -> bool;
       pub fn send_message(&self, text: &str) -> Result<bool>;
       pub fn send_photo_alert(&self, image_bytes: Vec<u8>, caption: &str) -> Result<bool>;
+      pub fn answer_callback(&self, query_id: &str, toast: &str) -> Result<()>;
       pub fn poll_commands(&mut self) -> Result<Vec<BotCommand>>;
   }
   ```
 
-### `src/sentry.rs` (Role: sentry, Lines: 240)
-- **Responsibility**: Core guardian loop coordinating stream frames, motion gating, detection, cooldown filtering, disk evidence, and two-way Telegram commands.
+### `src/sentry.rs` (Role: sentry, Lines: 382)
+- **Responsibility**: Core guardian loop coordinating stream frames, motion gating, multi-object detection, cooldown filtering, PiP zoom evidence, temporary mute timers, and Telegram commands/buttons.
 - **Public Functions & Signatures**:
   ```rust
   impl RoomSentry {
@@ -188,6 +191,7 @@ monban --test
 ```
 
 ## 6. Recent Iteration Changes
+- **2026-09-26 (v0.3.0)**: Added multi-object classification across all 80 COCO classes with contextual emojis (`COCO_CLASSES`, `class_emoji`). Added Picture-in-Picture (PiP) zoom thumbnail overlay on detected targets. Added interactive Telegram inline buttons (`[📸 Snapshot]`, `[🛡️ Mute 10m]`, `[⚔️ Arm]`, `[🛑 Disarm]`) with instant toast replies and timed mute alerts (`/mute`).
 - **2026-09-26**: Upgraded YOLO input resolution to native 640×640 with aspect-ratio preserving letterboxing (2.37× pixel density increase) and tuned confidence to 0.25 for distant intruder detection across rooms; upgraded motion grid to 128×96 with 0.005 sensitivity threshold.
 - **2026-09-26**: Added ultra-low-overhead pixel difference `MotionDetector` gating (idle CPU drops from ~150% to <2%) with 3s intruder grace period.
 - **2026-09-26**: Added two-way Telegram bot command control (`/status`, `/snap`, `/arm`, `/disarm`, `/help`) with strict `chat_id` authentication.
