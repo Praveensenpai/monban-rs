@@ -165,3 +165,11 @@ fn test_yolo_detector_adaptive_input_size() {
         }
     }
 }
+
+#[test]
+fn test_telegram_client_queue_unconfigured() {
+    let client = monban_rs::api::TelegramClient::new(None, None);
+    assert!(!client.is_configured());
+    assert!(!client.send_message("hello").unwrap());
+    assert!(!client.send_photo_alert(vec![], "alert").unwrap());
+}

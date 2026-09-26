@@ -156,11 +156,12 @@
   }
   ```
 
-### `src/api/telegram.rs` (Role: api, Lines: 236)
-- **Responsibility**: Two-way Telegram bot integration with interactive inline button keyboards (`[📸 Snapshot]`, `[🛡️ Mute 10m]`, `[⚔️ Arm]`, `[🛑 Disarm]`), toast callback queries, command polling (`/status`, `/snap`, `/mute`, `/arm`, `/disarm`, `/help`), and multipart photo alerts.
+### `src/api/telegram.rs` (Role: api, Lines: 341)
+- **Responsibility**: Two-way Telegram bot integration with interactive inline button keyboards (`[📸 Snapshot]`, `[🛡️ Mute 10m]`, `[⚔️ Arm]`, `[🛑 Disarm]`), toast callback queries, command polling, multipart photo alerts, and an internal rate-limited FIFO bounded queue (1 msg/sec pacing with automatic HTTP 429 backoff & retry).
 - **Public Functions & Signatures**:
   ```rust
   pub enum BotCommand { Status, Arm, Disarm, Mute(u64), Snap, Help }
+  pub enum OutgoingMessage { Text(String), Photo { bytes: Vec<u8>, caption: String } }
   impl TelegramClient {
       pub fn new(token: Option<String>, chat_id: Option<String>) -> Self;
       pub fn is_configured(&self) -> bool;
@@ -171,7 +172,7 @@
   }
   ```
 
-### `src/sentry.rs` (Role: sentry, Lines: 399)
+### `src/sentry.rs` (Role: sentry, Lines: 391)
 - **Responsibility**: Core guardian loop coordinating stream frames, motion gating, multi-object detection, cooldown filtering, PiP zoom evidence, temporary mute timers, and Telegram commands/buttons.
 - **Public Functions & Signatures**:
   ```rust
@@ -207,6 +208,7 @@ monban --test
 ```
 
 ## 6. Recent Iteration Changes
+- **2026-09-26 (v0.3.5)**: Rate-limited FIFO message queue & automatic HTTP 429 retry: implemented internal bounded worker channel (`sync_channel(10)`) and background pacing dispatcher enforcing Telegram's 1.0s inter-message limit; added exponential backoff on HTTP 429 / network errors reading `Retry-After`; eliminated ad-hoc thread spawning in sentry loop.
 - **2026-09-26 (v0.3.4)**: Real-time stream latency & non-blocking alert refactor: re-architected `MjpegStream` to zero-lag drop-stale raw JPEG storage (instantly discards older backlog frames, eliminating 2–4s queue lag when moving camera); made Telegram photo alert uploads non-blocking via detached background threads, keeping sentry video pipeline 100% fluid at real-time speeds.
 - **2026-09-26 (v0.3.3)**: Purged `cat` and irrelevant classes from default targets (`DEFAULT_TARGET_CLASSES`: strictly `person`, `dog`, `cow`), eliminating chair/furniture false alarms; added `--rotate <DEGREES>` (0, 90, 180, 270) stream rotation support for portrait/sideways camera orientations (eliminating 85% water bottle false human detections); calibrated default confidence to 0.45.
 - **2026-09-26 (v0.3.2)**: Target class whitelisting & confidence calibration: added guardian class whitelist (`DEFAULT_TARGET_CLASSES`: person, animals, vehicles), eliminating false alarms from non-guardian classes (e.g. household items misclassified as airplanes); raised calibrated default confidence to 0.40 to filter out weak false positives (e.g. water dispenser bottles as persons) while maintaining crisp detection for people and pets; introduced `ConfigOverrides` and `--targets` CLI argument.

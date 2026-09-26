@@ -6,7 +6,6 @@ use chrono::{FixedOffset, Utc};
 use image::{DynamicImage, ImageFormat};
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
@@ -115,12 +114,7 @@ impl RoomSentry {
         );
 
         self.last_alert = Some(Instant::now());
-        let tg = self.telegram.clone();
-        thread::spawn(move || {
-            if let Err(e) = tg.send_photo_alert(jpeg_bytes, &caption) {
-                warn!("Failed to dispatch Telegram photo alert: {e}");
-            }
-        });
+        let _ = self.telegram.send_photo_alert(jpeg_bytes, &caption);
         warn!(
             "🚨 Alert triggered: {} target(s) detected!",
             detections.len()
