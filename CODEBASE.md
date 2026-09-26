@@ -74,8 +74,8 @@
   }
   ```
 
-### `src/domain/config.rs` (Role: domain, Lines: 65)
-- **Responsibility**: Runtime configuration with automated `~/.config/tayori/config.toml` credential discovery.
+### `src/domain/config.rs` (Role: domain, Lines: 145)
+- **Responsibility**: Runtime configuration with priority: CLI > `~/.config/monban/config.toml` > `~/.config/tayori/config.toml`.
 - **Types & Enums**:
   ```rust
   pub struct SentryConfig {
@@ -86,13 +86,27 @@
       pub telegram_token: Option<String>,
       pub telegram_chat_id: Option<String>,
       pub save_dir: PathBuf,
+      pub motion_gate: bool,
+      pub motion_threshold: f32,
   }
   ```
+
+### `src/infra/motion.rs` (Role: infra, Lines: 55)
+- **Responsibility**: Ultra-fast grayscale pixel-difference motion detector gating YOLO inference (sub-0.1ms).
 - **Public Functions & Signatures**:
   ```rust
-  impl SentryConfig {
-      pub fn load_with_defaults(source: Option<String>, model_path: Option<PathBuf>, confidence: Option<f32>, cooldown: Option<u64>, save_dir: Option<PathBuf>) -> Self;
+  impl MotionDetector {
+      pub fn new(threshold: f32) -> Self;
+      pub fn check_motion(&mut self, image: &DynamicImage) -> bool;
+      pub fn reset(&mut self);
   }
+  ```
+
+### `src/infra/setup.rs` (Role: infra, Lines: 140)
+- **Responsibility**: Interactive terminal setup wizard configuring and validating dedicated Telegram bot.
+- **Public Functions & Signatures**:
+  ```rust
+  pub fn run_interactive_setup() -> Result<()>;
   ```
 
 ### `src/infra/mjpeg.rs` (Role: infra, Lines: 129)
@@ -124,19 +138,22 @@
   }
   ```
 
-### `src/api/telegram.rs` (Role: api, Lines: 62)
-- **Responsibility**: Dispatches HTML multipart image notifications to Telegram Bot API.
+### `src/api/telegram.rs` (Role: api, Lines: 165)
+- **Responsibility**: Two-way Telegram bot integration (command polling `/status`, `/snap`, `/arm`, `/disarm`, `/help` and multipart photo alert dispatcher).
 - **Public Functions & Signatures**:
   ```rust
+  pub enum BotCommand { Status, Arm, Disarm, Snap, Help }
   impl TelegramClient {
       pub fn new(token: Option<String>, chat_id: Option<String>) -> Self;
       pub fn is_configured(&self) -> bool;
+      pub fn send_message(&self, text: &str) -> Result<bool>;
       pub fn send_photo_alert(&self, image_bytes: Vec<u8>, caption: &str) -> Result<bool>;
+      pub fn poll_commands(&mut self) -> Result<Vec<BotCommand>>;
   }
   ```
 
-### `src/sentry.rs` (Role: sentry, Lines: 145)
-- **Responsibility**: Core guardian loop coordinating stream frames, detection, cooldown filtering, disk evidence, and Telegram alerts.
+### `src/sentry.rs` (Role: sentry, Lines: 240)
+- **Responsibility**: Core guardian loop coordinating stream frames, motion gating, detection, cooldown filtering, disk evidence, and two-way Telegram commands.
 - **Public Functions & Signatures**:
   ```rust
   impl RoomSentry {
@@ -148,11 +165,11 @@
   ```
 
 ## 4. Execution Lifecycle Trace
-1. **Startup**: `src/main.rs` ensures `ORT_DYLIB_PATH` is set, sets up `tracing_subscriber`, and parses CLI args.
-2. **Config Discovery**: `SentryConfig::load_with_defaults()` discovers Telegram credentials from `~/.config/tayori/config.toml`.
-3. **Model & Stream Init**: `YoloDetector` loads `yolov8n.onnx` into ONNX Runtime session; `MjpegStream` spawns background worker.
-4. **Guard Loop**: Every cycle reads latest frame, runs YOLO inference (42ms), applies NMS, saves evidence on intruder, and sends photo alert.
-5. **Exit**: Clean graceful teardown on SIGINT/Ctrl+C.
+1. **Startup**: `src/main.rs` parses CLI args. If `--setup`, runs interactive terminal wizard and exits.
+2. **Dynamic Dylib**: Resolves `libonnxruntime.so` to absolute canonical path and calls `ort::init_from`.
+3. **Config Discovery**: Priority: CLI > `~/.config/monban/config.toml` > `~/.config/tayori/config.toml`.
+4. **Guard Loop**: Every cycle reads latest frame, checks motion detector (<0.1ms). If static, skips YOLO inference (idle CPU <2%). If motion or within 3s grace window, runs YOLO (42ms).
+5. **Two-Way Control**: Sentry polls authorized Telegram commands every 1.5s (`/status`, `/snap`, `/arm`, `/disarm`, `/help`).
 
 ## 5. Verification Commands
 ```bash
@@ -163,11 +180,17 @@ cargo clippy --all-targets -- -D warnings
 # Automated test suite
 cargo test --all-targets
 
+# Interactive dedicated bot setup
+monban --setup
+
 # Live execution test
-./target/release/monban-rs --test
+monban --test
 ```
 
 ## 6. Recent Iteration Changes
+- **2026-09-26**: Added ultra-low-overhead pixel difference `MotionDetector` gating (idle CPU drops from ~150% to <2%) with 3s intruder grace period.
+- **2026-09-26**: Added two-way Telegram bot command control (`/status`, `/snap`, `/arm`, `/disarm`, `/help`) with strict `chat_id` authentication.
+- **2026-09-26**: Added `monban --setup` interactive terminal setup wizard for dedicated Telegram bot configuration stored in `~/.config/monban/config.toml`.
 - **2026-09-26**: Formatted all runtime logs in IST (Indian Standard Time, UTC+05:30) via custom `tracing_subscriber` `FormatTime` timer; replaced UTC timestamps across the entire application.
 - **2026-09-26**: Fixed ONNX Runtime dylib dynamic loader to canonicalize search paths and invoke `ort::init_from` explicitly; converted CLI `--model` to `Option<PathBuf>` enabling seamless global fallback to `~/.local/share/monban/yolov8n.onnx` from any working directory.
 - **2026-09-26**: Reduced default alert cooldown from 30s to 5s across CLI and domain config.

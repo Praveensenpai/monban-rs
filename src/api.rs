@@ -1,3 +1,3 @@
 pub mod telegram;
 
-pub use telegram::TelegramClient;
+pub use telegram::{BotCommand, TelegramClient};

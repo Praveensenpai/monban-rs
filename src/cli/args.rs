@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[command(
     name = "monban",
     author = "paisen",
-    version = "0.1.1",
+    version = "0.2.0",
     about = "🥋 門番 (Monban) — Zero-Bloat Rust AI Room & Door Sentry"
 )]
 pub struct CliArgs {
@@ -44,6 +44,25 @@ pub struct CliArgs {
 
     #[arg(long, help = "Test mode: capture 1 frame, check detection, and exit")]
     pub test: bool,
+
+    #[arg(
+        long,
+        help = "Run interactive setup wizard to configure dedicated Telegram bot"
+    )]
+    pub setup: bool,
+
+    #[arg(
+        long,
+        default_value_t = 0.015,
+        help = "Pixel difference threshold ratio for motion detection gating (0.001 - 1.0)"
+    )]
+    pub motion_threshold: f32,
+
+    #[arg(
+        long,
+        help = "Disable motion gating and run YOLO inference on every frame"
+    )]
+    pub no_motion_gate: bool,
 
     #[arg(short, long, help = "Enable verbose debug logging")]
     pub verbose: bool,

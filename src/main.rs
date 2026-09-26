@@ -77,9 +77,21 @@ fn ensure_onnx_dylib() {
 }
 
 fn main() -> Result<()> {
-    ensure_onnx_dylib();
     let args = CliArgs::parse();
     setup_logging(args.verbose);
+
+    if args.setup {
+        monban_rs::infra::run_interactive_setup()?;
+        return Ok(());
+    }
+
+    ensure_onnx_dylib();
+
+    let motion_gate = if args.no_motion_gate {
+        Some(false)
+    } else {
+        None
+    };
 
     let config = SentryConfig::load_with_defaults(
         Some(args.source),
@@ -87,6 +99,8 @@ fn main() -> Result<()> {
         Some(args.confidence),
         Some(args.cooldown),
         Some(args.save_dir),
+        motion_gate,
+        Some(args.motion_threshold),
     );
 
     let mut sentry = RoomSentry::new(config)?;

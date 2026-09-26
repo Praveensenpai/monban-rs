@@ -28,10 +28,12 @@ fn test_detection_structure() {
 
 #[test]
 fn test_sentry_config_defaults() {
-    let config = SentryConfig::load_with_defaults(None, None, None, None, None);
+    let config = SentryConfig::load_with_defaults(None, None, None, None, None, None, None);
     assert_eq!(config.source, "http://192.168.1.36:4747/video");
     assert_eq!(config.confidence_threshold, 0.35);
     assert_eq!(config.cooldown_seconds, 5);
+    assert!(config.motion_gate);
+    assert!((config.motion_threshold - 0.015).abs() < 1e-5);
 }
 
 #[test]
