@@ -142,10 +142,11 @@ fn save_monban_config(token: &str, chat_id: &str) -> Result<()> {
         chat_id = \"{chat_id}\"\n\n\
         [sentry]\n\
         source = \"http://192.168.1.36:4747/video\"\n\
-        confidence = 0.40\n\
+        confidence = 0.45\n\
         cooldown = 5\n\
         motion_gate = true\n\
-        motion_threshold = 0.005\n"
+        motion_threshold = 0.005\n\
+        rotate = 0\n"
     );
 
     std::fs::write(&config_file, content).map_err(MonbanError::Io)?;

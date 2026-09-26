@@ -86,9 +86,11 @@ Options:
   -m, --model <MODEL>
           Path to YOLOv8 ONNX model (defaults to yolov8n.onnx or ~/.local/share/monban/yolov8n.onnx)
   -c, --confidence <CONFIDENCE>
-          Detection confidence threshold (0.0 - 1.0) [default: 0.4]
+          Detection confidence threshold (0.0 - 1.0) [default: 0.45]
       --targets <TARGETS>
-          Comma-separated target classes to detect (default: person,dog,cat,cow,bird,horse,sheep,bear,elephant,car,motorcycle,bicycle)
+          Comma-separated target classes to detect (default: person,dog,cow)
+      --rotate <ROTATE>
+          Rotate video feed clockwise in degrees (0, 90, 180, 270) [default: 0]
       --cooldown <COOLDOWN>
           Seconds between Telegram alerts [default: 5]
       --save-dir <SAVE_DIR>

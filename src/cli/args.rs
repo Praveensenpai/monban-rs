@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[command(
     name = "monban",
     author = "paisen",
-    version = "0.3.2",
+    version = "0.3.3",
     about = "🥋 門番 (Monban) — Zero-Bloat Rust AI Room & Door Sentry"
 )]
 pub struct CliArgs {
@@ -27,16 +27,23 @@ pub struct CliArgs {
     #[arg(
         short,
         long,
-        default_value_t = 0.40,
+        default_value_t = 0.45,
         help = "Detection confidence threshold (0.0 - 1.0)"
     )]
     pub confidence: f32,
 
     #[arg(
         long,
-        help = "Comma-separated target classes to detect (default: person,dog,cat,cow,bird,horse,sheep,bear,elephant,car,motorcycle,bicycle)"
+        help = "Comma-separated target classes to detect (default: person,dog,cow)"
     )]
     pub targets: Option<String>,
+
+    #[arg(
+        long,
+        default_value_t = 0,
+        help = "Rotate video feed clockwise in degrees (0, 90, 180, 270)"
+    )]
+    pub rotate: u32,
 
     #[arg(long, default_value_t = 5, help = "Seconds between Telegram alerts")]
     pub cooldown: u64,

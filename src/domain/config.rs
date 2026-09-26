@@ -13,6 +13,7 @@ pub struct SentryConfig {
     pub motion_gate: bool,
     pub motion_threshold: f32,
     pub targets: Vec<String>,
+    pub rotate: u32,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -25,6 +26,7 @@ pub struct ConfigOverrides {
     pub motion_gate: Option<bool>,
     pub motion_threshold: Option<f32>,
     pub targets: Option<Vec<String>>,
+    pub rotate: Option<u32>,
 }
 
 #[derive(Deserialize, Default, Clone)]
@@ -47,6 +49,7 @@ pub struct SentryConfigSection {
     pub motion_gate: Option<bool>,
     pub motion_threshold: Option<f32>,
     pub targets: Option<Vec<String>>,
+    pub rotate: Option<u32>,
 }
 
 #[derive(Deserialize, Default)]
@@ -101,7 +104,7 @@ impl SentryConfig {
         let conf = overrides
             .confidence
             .or(sentry_sec.confidence)
-            .unwrap_or(0.40);
+            .unwrap_or(0.45);
         let cd = overrides.cooldown.or(sentry_sec.cooldown).unwrap_or(5);
         let mg = overrides
             .motion_gate
@@ -111,6 +114,7 @@ impl SentryConfig {
             .motion_threshold
             .or(sentry_sec.motion_threshold)
             .unwrap_or(0.005);
+        let rot = overrides.rotate.or(sentry_sec.rotate).unwrap_or(0);
 
         let default_targets: Vec<String> = crate::domain::DEFAULT_TARGET_CLASSES
             .iter()
@@ -134,6 +138,7 @@ impl SentryConfig {
             motion_gate: mg,
             motion_threshold: mt,
             targets,
+            rotate: rot,
         }
     }
 

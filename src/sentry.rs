@@ -50,16 +50,10 @@ impl RoomSentry {
     }
 
     pub fn process_frame(&mut self, image: &DynamicImage) -> Result<Vec<Detection>> {
-        let has_motion = if self.config.motion_gate {
-            self.motion_detector.check_motion(image)
-        } else {
-            true
-        };
-
+        let has_motion = !self.config.motion_gate || self.motion_detector.check_motion(image);
         let in_grace_period = self
             .last_person_seen
-            .map(|t| t.elapsed() < Duration::from_secs(3))
-            .unwrap_or(false);
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(3));
 
         if !has_motion && !in_grace_period {
             debug!("Static frame: skipping YOLO inference");
@@ -85,22 +79,12 @@ impl RoomSentry {
     }
 
     fn is_alert_enabled(&self) -> bool {
-        if !self.armed {
-            return false;
-        }
-        if let Some(until) = self.mute_until {
-            Instant::now() >= until
-        } else {
-            true
-        }
+        self.armed && self.mute_until.is_none_or(|until| Instant::now() >= until)
     }
 
     fn is_in_cooldown(&self) -> bool {
-        if let Some(last) = self.last_alert {
-            last.elapsed() < Duration::from_secs(self.config.cooldown_seconds)
-        } else {
-            false
-        }
+        self.last_alert
+            .is_some_and(|last| last.elapsed() < Duration::from_secs(self.config.cooldown_seconds))
     }
 
     fn handle_alert(&mut self, image: &DynamicImage, detections: &[Detection]) -> Result<()> {
@@ -343,12 +327,21 @@ impl RoomSentry {
         Ok(())
     }
 
+    fn orient_frame(&self, frame: DynamicImage) -> DynamicImage {
+        match self.config.rotate {
+            90 => frame.rotate90(),
+            180 => frame.rotate180(),
+            270 => frame.rotate270(),
+            _ => frame,
+        }
+    }
+
     pub fn run_test(&mut self) -> Result<()> {
         info!("Running single-frame test mode on: {}", self.config.source);
         let stream = MjpegStream::connect(&self.config.source)?;
 
         let start = Instant::now();
-        let frame = loop {
+        let raw_frame = loop {
             if let Ok(f) = stream.read_latest_frame() {
                 break f;
             }
@@ -360,6 +353,7 @@ impl RoomSentry {
             std::thread::sleep(Duration::from_millis(100));
         };
 
+        let frame = self.orient_frame(raw_frame);
         let test_path = self.config.save_dir.join("test_snapshot_rs.jpg");
         frame.save_with_format(&test_path, ImageFormat::Jpeg)?;
         info!("Saved raw test frame to {:?}", test_path);
@@ -378,7 +372,8 @@ impl RoomSentry {
 
         loop {
             match stream.read_latest_frame() {
-                Ok(frame) => {
+                Ok(raw_frame) => {
+                    let frame = self.orient_frame(raw_frame);
                     if let Err(e) = self.process_frame(&frame) {
                         warn!("Error processing frame: {e}");
                     }

@@ -58,14 +58,14 @@
   pub type Result<T> = std::result::Result<T, MonbanError>;
   ```
 
-### `src/domain/models.rs` (Role: domain, Lines: 166)
+### `src/domain/models.rs` (Role: domain, Lines: 153)
 - **Responsibility**: Pure domain models for bounding boxes, area calculation, Intersection-over-Union (IoU), 80 COCO classes, emoji mapping, and target guardian class filtering.
 - **Types & Enums**:
   ```rust
   pub struct BoundingBox { pub x1: f32, pub y1: f32, pub x2: f32, pub y2: f32 }
   pub struct Detection { pub class_id: usize, pub label: String, pub confidence: f32, pub box_coords: BoundingBox }
   pub const COCO_CLASSES: [&str; 80] = [ ... ];
-  pub const DEFAULT_TARGET_CLASSES: [&str; 12] = [ "person", "dog", "cat", "cow", "bird", "horse", "sheep", "bear", "elephant", "car", "motorcycle", "bicycle" ];
+  pub const DEFAULT_TARGET_CLASSES: [&str; 3] = [ "person", "dog", "cow" ];
   ```
 - **Public Functions & Signatures**:
   ```rust
@@ -78,7 +78,7 @@
   pub fn is_default_target(label: &str) -> bool;
   ```
 
-### `src/domain/config.rs` (Role: domain, Lines: 181)
+### `src/domain/config.rs` (Role: domain, Lines: 186)
 - **Responsibility**: Runtime configuration with priority: CLI > `~/.config/monban/config.toml` > `~/.config/tayori/config.toml`.
 - **Types & Enums**:
   ```rust
@@ -93,6 +93,7 @@
       pub motion_gate: bool,
       pub motion_threshold: f32,
       pub targets: Vec<String>,
+      pub rotate: u32,
   }
   pub struct ConfigOverrides {
       pub source: Option<String>,
@@ -103,6 +104,7 @@
       pub motion_gate: Option<bool>,
       pub motion_threshold: Option<f32>,
       pub targets: Option<Vec<String>>,
+      pub rotate: Option<u32>,
   }
   ```
 
@@ -205,6 +207,7 @@ monban --test
 ```
 
 ## 6. Recent Iteration Changes
+- **2026-09-26 (v0.3.3)**: Purged `cat` and irrelevant classes from default targets (`DEFAULT_TARGET_CLASSES`: strictly `person`, `dog`, `cow`), eliminating chair/furniture false alarms; added `--rotate <DEGREES>` (0, 90, 180, 270) stream rotation support for portrait/sideways camera orientations (eliminating 85% water bottle false human detections); calibrated default confidence to 0.45.
 - **2026-09-26 (v0.3.2)**: Target class whitelisting & confidence calibration: added guardian class whitelist (`DEFAULT_TARGET_CLASSES`: person, animals, vehicles), eliminating false alarms from non-guardian classes (e.g. household items misclassified as airplanes); raised calibrated default confidence to 0.40 to filter out weak false positives (e.g. water dispenser bottles as persons) while maintaining crisp detection for people and pets; introduced `ConfigOverrides` and `--targets` CLI argument.
 - **2026-09-26 (v0.3.1)**: Added adaptive model input resolution detection from ONNX tensor graph (`detect_input_size`), dynamically supporting both 416x416 legacy models and 640x640 high-density models; updated bundled and system `yolov8n.onnx` to native 640x640 resolution.
 - **2026-09-26 (v0.3.0)**: Added multi-object classification across all 80 COCO classes with contextual emojis (`COCO_CLASSES`, `class_emoji`). Added Picture-in-Picture (PiP) zoom thumbnail overlay on detected targets. Added interactive Telegram inline buttons (`[📸 Snapshot]`, `[🛡️ Mute 10m]`, `[⚔️ Arm]`, `[🛑 Disarm]`) with instant toast replies and timed mute alerts (`/mute`).

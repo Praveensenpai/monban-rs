@@ -100,6 +100,12 @@ fn main() -> Result<()> {
             .collect()
     });
 
+    let rotate = if args.rotate > 0 {
+        Some(args.rotate)
+    } else {
+        None
+    };
+
     let config = SentryConfig::load_with_defaults(ConfigOverrides {
         source: Some(args.source),
         model_path: args.model,
@@ -109,6 +115,7 @@ fn main() -> Result<()> {
         motion_gate,
         motion_threshold: Some(args.motion_threshold),
         targets,
+        rotate,
     });
 
     let mut sentry = RoomSentry::new(config)?;
