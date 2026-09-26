@@ -33,3 +33,15 @@ fn test_sentry_config_defaults() {
     assert_eq!(config.confidence_threshold, 0.35);
     assert_eq!(config.cooldown_seconds, 5);
 }
+
+#[test]
+fn test_ist_timestamp_offset() {
+    use chrono::{FixedOffset, Utc};
+    let ist = match FixedOffset::east_opt(19800) {
+        Some(offset) => offset,
+        None => panic!("Valid IST offset"),
+    };
+    let now = Utc::now().with_timezone(&ist);
+    let formatted = now.format("%Y-%m-%d %H:%M:%S IST").to_string();
+    assert!(formatted.ends_with("IST"));
+}

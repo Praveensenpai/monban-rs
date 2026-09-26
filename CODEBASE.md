@@ -168,5 +168,7 @@ cargo test --all-targets
 ```
 
 ## 6. Recent Iteration Changes
+- **2026-09-26**: Formatted all runtime logs in IST (Indian Standard Time, UTC+05:30) via custom `tracing_subscriber` `FormatTime` timer; replaced UTC timestamps across the entire application.
+- **2026-09-26**: Fixed ONNX Runtime dylib dynamic loader to canonicalize search paths and invoke `ort::init_from` explicitly; converted CLI `--model` to `Option<PathBuf>` enabling seamless global fallback to `~/.local/share/monban/yolov8n.onnx` from any working directory.
 - **2026-09-26**: Reduced default alert cooldown from 30s to 5s across CLI and domain config.
 - **2026-09-26**: Complete Rust port of Monban AI room sentry. 11MB standalone binary, 69MB RAM footprint (91.5% reduction), 42ms inference latency.

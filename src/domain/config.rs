@@ -39,9 +39,21 @@ impl SentryConfig {
             Path::new(&home).join(".local/share/monban/yolov8n.onnx")
         };
 
+        let resolved_model = match model_path {
+            Some(p) if p.exists() => p,
+            Some(p) => {
+                if default_model.exists() {
+                    default_model
+                } else {
+                    p
+                }
+            }
+            None => default_model,
+        };
+
         Self {
             source: source.unwrap_or_else(|| "http://192.168.1.36:4747/video".to_string()),
-            model_path: model_path.unwrap_or(default_model),
+            model_path: resolved_model,
             confidence_threshold: confidence.unwrap_or(0.35),
             cooldown_seconds: cooldown.unwrap_or(5),
             telegram_token: token,

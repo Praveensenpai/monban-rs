@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[command(
     name = "monban",
     author = "paisen",
-    version = "0.1.0",
+    version = "0.1.1",
     about = "🥋 門番 (Monban) — Zero-Bloat Rust AI Room & Door Sentry"
 )]
 pub struct CliArgs {
@@ -20,10 +20,9 @@ pub struct CliArgs {
     #[arg(
         short,
         long,
-        default_value = "yolov8n.onnx",
-        help = "Path to YOLOv8 ONNX model"
+        help = "Path to YOLOv8 ONNX model (defaults to yolov8n.onnx or ~/.local/share/monban/yolov8n.onnx)"
     )]
-    pub model: PathBuf,
+    pub model: Option<PathBuf>,
 
     #[arg(
         short,
