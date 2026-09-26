@@ -125,8 +125,8 @@
   }
   ```
 
-### `src/infra/detector.rs` (Role: infra, Lines: 273)
-- **Responsibility**: ONNX Runtime YOLOv8n detector with letterboxing to native 640x640, 80-class scanning, NMS, and Picture-in-Picture (PiP) zoom thumbnail overlay.
+### `src/infra/detector.rs` (Role: infra, Lines: 292)
+- **Responsibility**: ONNX Runtime YOLOv8n detector with dynamic model input resolution auto-detection (supports both 416x416 and 640x640), aspect-ratio letterboxing, 80-class scanning, NMS, and Picture-in-Picture (PiP) zoom thumbnail overlay.
 - **Types & Enums**:
   ```rust
   pub struct YoloDetector { ... }
@@ -135,6 +135,7 @@
   ```rust
   impl YoloDetector {
       pub fn new(model_path: &Path) -> Result<Self>;
+      pub fn input_size(&self) -> u32;
       pub fn detect(&mut self, image: &DynamicImage, threshold: f32) -> Result<Vec<Detection>>;
       pub fn annotate_frame(image: &DynamicImage, detections: &[Detection]) -> RgbImage;
   }
@@ -191,6 +192,7 @@ monban --test
 ```
 
 ## 6. Recent Iteration Changes
+- **2026-09-26 (v0.3.1)**: Added adaptive model input resolution detection from ONNX tensor graph (`detect_input_size`), dynamically supporting both 416x416 legacy models and 640x640 high-density models; updated bundled and system `yolov8n.onnx` to native 640x640 resolution.
 - **2026-09-26 (v0.3.0)**: Added multi-object classification across all 80 COCO classes with contextual emojis (`COCO_CLASSES`, `class_emoji`). Added Picture-in-Picture (PiP) zoom thumbnail overlay on detected targets. Added interactive Telegram inline buttons (`[📸 Snapshot]`, `[🛡️ Mute 10m]`, `[⚔️ Arm]`, `[🛑 Disarm]`) with instant toast replies and timed mute alerts (`/mute`).
 - **2026-09-26**: Upgraded YOLO input resolution to native 640×640 with aspect-ratio preserving letterboxing (2.37× pixel density increase) and tuned confidence to 0.25 for distant intruder detection across rooms; upgraded motion grid to 128×96 with 0.005 sensitivity threshold.
 - **2026-09-26**: Added ultra-low-overhead pixel difference `MotionDetector` gating (idle CPU drops from ~150% to <2%) with 3s intruder grace period.

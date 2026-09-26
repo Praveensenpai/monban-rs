@@ -4,10 +4,10 @@ use image::{DynamicImage, GenericImageView, Rgb, RgbImage};
 use ndarray::Array4;
 use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
-use ort::value::Tensor;
+use ort::value::{Tensor, ValueType};
 use std::path::Path;
+use tracing::info;
 
-const MODEL_INPUT_SIZE: u32 = 640;
 const NMS_IOU_THRESHOLD: f32 = 0.45;
 
 #[derive(Clone, Copy)]
@@ -38,6 +38,7 @@ impl LetterboxInfo {
 
 pub struct YoloDetector {
     session: Session,
+    input_size: u32,
 }
 
 impl YoloDetector {
@@ -47,12 +48,32 @@ impl YoloDetector {
             .with_intra_threads(2)?
             .commit_from_file(model_path)?;
 
-        Ok(Self { session })
+        let input_size = Self::detect_input_size(&session);
+        info!("YOLO detector initialized with {input_size}x{input_size} input resolution.");
+
+        Ok(Self {
+            session,
+            input_size,
+        })
+    }
+
+    pub fn input_size(&self) -> u32 {
+        self.input_size
+    }
+
+    fn detect_input_size(session: &Session) -> u32 {
+        let Some(input) = session.inputs().first() else {
+            return 640;
+        };
+        match input.dtype() {
+            ValueType::Tensor { shape, .. } if shape.len() >= 4 && shape[2] > 0 => shape[2] as u32,
+            _ => 640,
+        }
     }
 
     pub fn detect(&mut self, image: &DynamicImage, threshold: f32) -> Result<Vec<Detection>> {
         let (orig_w, orig_h) = image.dimensions();
-        let (input_array, letterbox) = Self::preprocess(image);
+        let (input_array, letterbox) = Self::preprocess(image, self.input_size);
         let input_tensor = Tensor::from_array(input_array)?;
 
         let outputs = self.session.run(ort::inputs![input_tensor])?;
@@ -73,15 +94,14 @@ impl YoloDetector {
         Ok(Self::apply_nms(candidates, NMS_IOU_THRESHOLD))
     }
 
-    fn preprocess(image: &DynamicImage) -> (Array4<f32>, LetterboxInfo) {
+    fn preprocess(image: &DynamicImage, input_size: u32) -> (Array4<f32>, LetterboxInfo) {
         let (orig_w, orig_h) = image.dimensions();
-        let (info, new_w, new_h) = LetterboxInfo::compute(orig_w, orig_h, MODEL_INPUT_SIZE);
+        let (info, new_w, new_h) = LetterboxInfo::compute(orig_w, orig_h, input_size);
 
         let resized = image.resize_exact(new_w, new_h, image::imageops::FilterType::Triangle);
         let rgb = resized.to_rgb8();
 
-        let mut array =
-            Array4::<f32>::zeros((1, 3, MODEL_INPUT_SIZE as usize, MODEL_INPUT_SIZE as usize));
+        let mut array = Array4::<f32>::zeros((1, 3, input_size as usize, input_size as usize));
         let offset_x = info.pad_x.round() as usize;
         let offset_y = info.pad_y.round() as usize;
 
@@ -89,7 +109,7 @@ impl YoloDetector {
             let [r, g, b] = pixel.0;
             let target_y = offset_y + y as usize;
             let target_x = offset_x + x as usize;
-            if target_y < MODEL_INPUT_SIZE as usize && target_x < MODEL_INPUT_SIZE as usize {
+            if target_y < input_size as usize && target_x < input_size as usize {
                 array[[0, 0, target_y, target_x]] = r as f32 / 255.0;
                 array[[0, 1, target_y, target_x]] = g as f32 / 255.0;
                 array[[0, 2, target_y, target_x]] = b as f32 / 255.0;

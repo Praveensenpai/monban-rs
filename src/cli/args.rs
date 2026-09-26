@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[command(
     name = "monban",
     author = "paisen",
-    version = "0.3.0",
+    version = "0.3.1",
     about = "🥋 門番 (Monban) — Zero-Bloat Rust AI Room & Door Sentry"
 )]
 pub struct CliArgs {

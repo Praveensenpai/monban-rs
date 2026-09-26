@@ -65,3 +65,28 @@ fn test_coco_classes_and_emojis() {
     assert_eq!(class_emoji("laptop"), "💻");
     assert_eq!(class_emoji("alien_creature"), "🎯");
 }
+
+#[test]
+fn test_yolo_detector_adaptive_input_size() {
+    use image::{DynamicImage, RgbImage};
+    use monban_rs::infra::YoloDetector;
+    use std::path::Path;
+
+    let dylib = Path::new("/home/paisen/.local/lib/libonnxruntime.so");
+    if dylib.exists() {
+        let _ = ort::init_from(dylib);
+    }
+
+    let model_path = Path::new("yolov8n.onnx");
+    if model_path.exists() {
+        let mut detector = match YoloDetector::new(model_path) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        assert_eq!(detector.input_size(), 640);
+
+        let img = DynamicImage::ImageRgb8(RgbImage::new(640, 480));
+        let results = detector.detect(&img, 0.25);
+        assert!(results.is_ok());
+    }
+}
